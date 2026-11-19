@@ -1,0 +1,47 @@
+# Schema für den JSON Log Viewer
+# Jede Logzeile ist ein JSON-Objekt; jede Spalte holt sich ihren Wert über einen Pfad.
+#
+# Pfad-Syntax:
+#   level              Top-Level-Feld
+#   context.user.id    verschachteltes Feld
+#   tags[0]            Array-Element (alternativ tags.0)
+#   log.level          funktioniert auch, wenn der Schlüssel selbst einen Punkt enthält (ECS)
+#   $raw               die komplette Rohzeile
+#
+# Objekte/Arrays werden in der Zelle als kompaktes JSON angezeigt.
+
+title: "Meine App-Logs"
+
+columns:
+  - name: Zeit
+    path: "@timestamp"
+    width: 190
+  - name: Level
+    path: level
+    width: 70
+  - name: Logger
+    path: logger
+    width: 220
+  - name: Thread
+    path: thread
+    width: 120
+  - name: Nachricht
+    path: message
+    width: 600
+  - name: User
+    path: context.user.id
+    width: 90
+  - name: Dauer ms
+    path: context.durationMs
+    width: 80
+  - name: Exception
+    path: error.type
+    width: 200
+
+# Optional: Zeilen anhand eines Feldwerts einfärben (Vergleich ohne Groß-/Kleinschreibung)
+rowColors:
+  path: level
+  values:
+    ERROR: "#FFD6D6"
+    WARN: "#FFF2C2"
+    DEBUG: "#EEEEEE"
