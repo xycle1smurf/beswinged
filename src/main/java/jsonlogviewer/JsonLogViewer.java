@@ -73,6 +73,8 @@ import javax.swing.JProgressBar;
 import javax.swing.JRadioButton;
 import javax.swing.JRadioButtonMenuItem;
 import javax.swing.JScrollPane;
+import javax.swing.JSpinner;
+import javax.swing.SpinnerNumberModel;
 import javax.swing.JSplitPane;
 import javax.swing.JTable;
 import javax.swing.JTextArea;
@@ -158,8 +160,15 @@ public final class JsonLogViewer extends JFrame {
     private final JCheckBoxMenuItem tailItem = new JCheckBoxMenuItem("Tail / Schreiben folgen");
     private final Timer tailTimer = new Timer(500, e -> tailPoll());
     private boolean tailBusy;
-    private final JTextField timeField = new JTextField(16);
-    private final JButton timeButton = new JButton("Gehe zu");
+    // Zeitraum (Von/Bis + Zusatzzeilen)
+    private final JPanel timeBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 2));
+    private final DateTimeField fromField = new DateTimeField();
+    private final DateTimeField toField = new DateTimeField();
+    private final JSpinner extraBefore = new JSpinner(new SpinnerNumberModel(0, 0, 1_000_000, 1));
+    private final JSpinner extraAfter = new JSpinner(new SpinnerNumberModel(0, 0, 1_000_000, 1));
+    private final JLabel zoneLabel = new JLabel();
+    private String zoneSample;         // Zeitstempel der ersten Zeile (für den Offset der Datei)
+    private boolean rangeReapplyOnTail; // Zeitraum reicht bis ans Dateiende -> bei Tail neu berechnen
     private Predicate<String> activeFilter; // Zeilentest des angewendeten Filters (null = keiner)
     private int filteredUpTo;               // Zeilen < filteredUpTo hat der Filter geprüft
 
@@ -175,7 +184,10 @@ public final class JsonLogViewer extends JFrame {
         north.add(buildToolbar(), BorderLayout.NORTH);
         choiceBar.setBorder(BorderFactory.createEmptyBorder(0, 4, 4, 4));
         choiceBar.setVisible(false);
-        north.add(choiceBar, BorderLayout.SOUTH);
+        JPanel bars = new JPanel(new BorderLayout());
+        bars.add(choiceBar, BorderLayout.NORTH);
+        bars.add(buildTimeBar(), BorderLayout.SOUTH);
+        north.add(bars, BorderLayout.SOUTH);
         add(north, BorderLayout.NORTH);
 
         table.setAutoCreateColumnsFromModel(false); // Spalten verwaltet der Viewer selbst
@@ -367,18 +379,58 @@ public final class JsonLogViewer extends JFrame {
         clearButton.addActionListener(e -> resetAllFilters());
         tb.add(filterButton);
         tb.add(clearButton);
-        tb.addSeparator();
-        tb.add(new JLabel("Zeit: "));
-        timeField.setMaximumSize(new Dimension(190, 28));
-        timeField.setToolTipText("<html>Springt zur ersten Zeile ab diesem Zeitpunkt.<br>"
-                + "Formate: 2026-11-19 08:15:30, 19.11.2026 08:15, 08:15 (Datum der ausgewählten Zeile),<br>"
-                + "2026-11-19T07:15:00Z. Ohne Offset gilt die Zeitzone der Zeitstempel-Spalte.</html>");
-        timeField.addActionListener(e -> gotoTime());
-        tb.add(timeField);
-        timeButton.addActionListener(e -> gotoTime());
-        tb.add(timeButton);
         tb.add(Box.createHorizontalGlue());
         return tb;
+    }
+
+    /** Dritte Filterzeile: Zeitraum Von/Bis mit Kalender, Zusatzzeilen davor/danach. */
+    private JPanel buildTimeBar() {
+        timeBar.setBorder(BorderFactory.createEmptyBorder(0, 4, 4, 4));
+        for (DateTimeField f : new DateTimeField[]{fromField, toField}) {
+            f.setZoneSupplier(this::displayZone);
+            f.setReferenceSupplier(this::referenceTime);
+            f.textField().addActionListener(e -> applyTimeRange());
+        }
+        for (JSpinner sp : new JSpinner[]{extraBefore, extraAfter}) {
+            javax.swing.JFormattedTextField tf = ((JSpinner.DefaultEditor) sp.getEditor()).getTextField();
+            tf.setColumns(5);
+            tf.addActionListener(e -> applyTimeRange());
+        }
+        extraBefore.setToolTipText("Zeilen vor der ersten Zeile des Zeitraums, unabhängig von ihrer Zeit");
+        extraAfter.setToolTipText("Zeilen nach der letzten Zeile des Zeitraums, unabhängig von ihrer Zeit");
+        zoneLabel.setForeground(Color.GRAY);
+        JButton apply = new JButton("Anwenden");
+        apply.addActionListener(e -> applyTimeRange());
+        JButton jump = new JButton("Gehe zu Von");
+        jump.setToolTipText("Zur ersten Zeile ab „Von“ springen, ohne zu filtern");
+        jump.addActionListener(e -> gotoFrom());
+        JButton around = new JButton("Umliegend…");
+        around.setToolTipText("Zeitraum um den Zeitstempel der ausgewählten Zeile (auch per Rechtsklick)");
+        around.addActionListener(e -> showSurroundingRange());
+        JButton clear = new JButton("Leeren");
+        clear.addActionListener(e -> { clearTimeRange(); applyFilter(); });
+        timeBar.add(new JLabel("Zeitraum von"));
+        timeBar.add(fromField);
+        timeBar.add(new JLabel("bis"));
+        timeBar.add(toField);
+        timeBar.add(zoneLabel);
+        timeBar.add(Box.createHorizontalStrut(8));
+        timeBar.add(new JLabel("Zusätzlich davor"));
+        timeBar.add(extraBefore);
+        timeBar.add(new JLabel("danach"));
+        timeBar.add(extraAfter);
+        timeBar.add(new JLabel("Zeilen"));
+        timeBar.add(apply);
+        timeBar.add(jump);
+        timeBar.add(around);
+        timeBar.add(clear);
+        setTimeBarEnabled(false);
+        return timeBar;
+    }
+
+    private void setTimeBarEnabled(boolean on) {
+        if (timeBar.getComponentCount() > 0 && timeBar.getComponent(1).isEnabled() == on) return;
+        for (Component c : timeBar.getComponents()) c.setEnabled(on);
     }
 
     private JPopupMenu buildPopup() {
@@ -386,6 +438,10 @@ public final class JsonLogViewer extends JFrame {
         pm.add(new JMenuItem(new AbstractAction("Kopiere Zelle") {
             @Override public void actionPerformed(ActionEvent e) { copyCell(); }
         }));
+        pm.add(new JMenuItem(new AbstractAction("Umliegender Zeitraum…") {
+            @Override public void actionPerformed(ActionEvent e) { showSurroundingRange(); }
+        }));
+        pm.addSeparator();
         pm.add(new JMenuItem(new AbstractAction("Rohzeile(n) kopieren") {
             @Override public void actionPerformed(ActionEvent e) { copyRawLines(); }
         }));
@@ -954,6 +1010,7 @@ public final class JsonLogViewer extends JFrame {
             return;
         }
         index = idx;
+        zoneSample = null;
         indexMillis = -1;
         indexStartNanos = System.nanoTime();
         AtomicBoolean cancel = new AtomicBoolean();
@@ -1038,8 +1095,7 @@ public final class JsonLogViewer extends JFrame {
     private void tick() {
         if (index == null) {
             status.setText("Keine Datei geöffnet — Datei per Drag & Drop oder Strg+O öffnen");
-            timeField.setEnabled(false);
-            timeButton.setEnabled(false);
+            setTimeBarEnabled(false);
             return;
         }
         if (autoSchemaPending && (index.lineCount() >= AUTO_SAMPLE || index.isComplete())) applySchema();
@@ -1053,8 +1109,8 @@ public final class JsonLogViewer extends JFrame {
           .append(index.mode() == LineIndex.Mode.RAM ? "  —  im RAM" : "  —  Seek-Index");
         if (tailItem.isSelected()) sb.append("  —  Tail");
         boolean ts = index.timestampSlots() > 0;
-        timeField.setEnabled(ts);
-        timeButton.setEnabled(ts);
+        setTimeBarEnabled(ts);
+        zoneLabel.setText(ts ? "(" + zoneName(displayZone()) + ")" : "");
         if (!index.isComplete()) {
             int permille = size == 0 ? 0 : (int) (index.bytesScanned() * 1000 / size);
             sb.append("  —  indiziere… ").append(permille / 10).append('%');
@@ -1118,16 +1174,35 @@ public final class JsonLogViewer extends JFrame {
     /** "Zurücksetzen" in der Filterleiste: Text-, Auswahl- und Level-Filter leeren. */
     private void resetAllFilters() {
         filterField.setText("");
+        clearTimeRange();
         resetChoiceWidgets();
         clearFilter();
     }
 
-    /** Wendet Textfilter, Auswahlfilter und Loglevel-Filter gemeinsam (UND) an. */
     private void applyFilter() {
+        applyFilter(-1, false);
+    }
+
+    /**
+     * Wendet Zeitraum, Textfilter, Auswahlfilter und Loglevel-Filter gemeinsam (UND) an.
+     * @param focusLine danach auszuwählende Zeile (-1 = bisherige Auswahl)
+     * @param fromTail  vom Tail ausgelöst: Auswahl ohne Scrollen wiederherstellen
+     */
+    private void applyFilter(int focusLine, boolean fromTail) {
         if (index == null || !index.isComplete()) return;
         String text = filterField.getText();
         List<ColumnCondition> conds = columnConditions();
-        if (text.isEmpty() && conds.isEmpty()) { clearFilter(); return; }
+        LineRange range;
+        try {
+            range = timeRange();
+        } catch (DateTimeException ex) {
+            if (!fromTail) JOptionPane.showMessageDialog(this, ex.getMessage(), "Zeitraum", JOptionPane.ERROR_MESSAGE);
+            return;
+        } catch (IOException ex) {
+            error("Lesefehler", ex);
+            return;
+        }
+        if (text.isEmpty() && conds.isEmpty() && range == null) { clearFilter(); return; }
 
         Predicate<String> matcher = null;
         if (text.isEmpty()) {
@@ -1176,7 +1251,13 @@ public final class JsonLogViewer extends JFrame {
         LineIndex idx = index;
         LogTableModel targetModel = model;
         int total = idx.lineCount();
-        int selectedLine = table.getSelectedRow() >= 0 ? model.lineAt(table.getSelectedRow()) : -1;
+        int scanFrom = range == null ? 0 : range.lo(), scanTo = range == null ? total : range.hi();
+        boolean trivial = textMatcher == null && conds.isEmpty(); // nur Zeitraum: keine Zeile lesen
+        int selectedLine = focusLine >= 0 ? focusLine : table.getSelectedRow() >= 0 ? model.lineAt(table.getSelectedRow()) : -1;
+        // Tail: offener Zeitraum -> neue Zeilen normal prüfen; endet er vor dem Dateiende -> keine neuen Treffer;
+        // reicht ein begrenzter Zeitraum bis ans Ende -> bei neuen Zeilen neu berechnen
+        boolean reapply = range != null && !range.openEnd() && range.hi() >= total;
+        Predicate<String> tailTest = range != null && !range.openEnd() && !reapply ? s -> false : lineTest;
         filterProgress = 0;
         filterStatus.setText("filtere…");
         long t0 = System.nanoTime();
@@ -1185,10 +1266,14 @@ public final class JsonLogViewer extends JFrame {
             int[][] hits = {new int[1024]};
             int[] count = {0};
             try {
-                idx.scan(0, total, (line, s) -> {
+                if (trivial) {
+                    hits[0] = new int[Math.max(0, scanTo - scanFrom)];
+                    for (int i = scanFrom; i < scanTo; i++) hits[0][count[0]++] = i;
+                } else idx.scan(scanFrom, scanTo, (line, s) -> {
                     if ((line & 0xFFF) == 0) {
                         if (cancel.get()) return false;
-                        filterProgress = total == 0 ? 0 : (int) ((long) line * 1000 / total);
+                        int span = Math.max(1, scanTo - scanFrom);
+                        filterProgress = (int) ((long) (line - scanFrom) * 1000 / span);
                     }
                     if (lineTest.test(s)) {
                         if (count[0] == hits[0].length) hits[0] = Arrays.copyOf(hits[0], hits[0].length * 2);
@@ -1207,10 +1292,16 @@ public final class JsonLogViewer extends JFrame {
                 if (cancel.get() || model != targetModel) return;
                 filterProgress = -1;
                 model.setFilter(result, count[0]);
-                activeFilter = lineTest;
+                activeFilter = tailTest;
+                rangeReapplyOnTail = reapply;
                 filteredUpTo = total;
-                filterStatus.setText(String.format("Filter: %,d Treffer (%.1f s)", count[0], ms / 1000.0));
-                if (selectedLine >= 0 && count[0] > 0) selectRow(model.nearestViewRow(selectedLine));
+                filterStatus.setText(String.format("Filter: %,d Treffer (%.1f s)", count[0], ms / 1000.0)
+                        + (range != null ? "  —  Zeitraum " + range.desc() : ""));
+                if (selectedLine >= 0 && count[0] > 0) {
+                    int row = model.nearestViewRow(selectedLine);
+                    if (fromTail) table.getSelectionModel().setSelectionInterval(row, row);
+                    else selectRow(row);
+                }
                 tick();
             });
         }, "filter");
@@ -1346,70 +1437,145 @@ public final class JsonLogViewer extends JFrame {
         }
     }
 
-    // ================================================================== Zeitsuche
+    // ================================================================== Zeitraum
 
-    private static final DateTimeFormatter IN_TIME = new DateTimeFormatterBuilder()
-            .appendPattern("H:mm").optionalStart().appendPattern(":ss")
-            .optionalStart().appendFraction(ChronoField.NANO_OF_SECOND, 1, 9, true).optionalEnd().optionalEnd()
-            .toFormatter();
-    private static final DateTimeFormatter IN_ISO = timeInput("uuuu-MM-dd");
-    private static final DateTimeFormatter IN_DE = timeInput("d.M.uuuu");
-    private static final Pattern OFFSET_SUFFIX = Pattern.compile("(?:Z|[+-]\\d{2}(?::?\\d{2})?)$");
+    /** Zeilenbereich [lo, hi) eines Zeitraums inkl. Zusatzzeilen; {@code first} = erste Zeile im Zeitraum. */
+    private record LineRange(int lo, int hi, int first, boolean openEnd, String desc) {}
 
-    private static DateTimeFormatter timeInput(String datePattern) {
-        return new DateTimeFormatterBuilder().appendPattern(datePattern)
-                .optionalStart().appendLiteral(' ').append(IN_TIME).optionalEnd().toFormatter();
+    /** Zeitzone, in der Zeiten eingegeben und angezeigt werden (wie die Zeitstempel-Spalte). */
+    private ZoneId displayZone() {
+        if (index == null) return ZoneId.systemDefault();
+        if (zoneSample == null && index.lineCount() > 0) {
+            try { zoneSample = index.timestampText(index.readLine(0)); } catch (IOException ignored) { }
+        }
+        return inputZone(zoneSample);
     }
 
-    /** Springt zur ersten Zeile mit Zeitstempel >= Eingabe; nutzt den Zeitstempel-Index (jede 20. Zeile). */
-    private void gotoTime() {
-        if (index == null || index.timestampSlots() == 0) {
-            JOptionPane.showMessageDialog(this, "In dieser Datei wurden (noch) keine Zeitstempel gefunden.",
-                    "Zeitsuche", JOptionPane.INFORMATION_MESSAGE);
-            return;
+    private static String zoneName(ZoneId z) {
+        if (z.equals(ZoneOffset.UTC)) return "UTC";
+        if (z.equals(ZoneId.systemDefault()) && !(z instanceof ZoneOffset)) return "lokal, " + z.getId();
+        return "UTC" + z.getId();
+    }
+
+    /** Zeitstempel der ausgewählten Zeile (sonst der ersten) in der Anzeige-Zeitzone; Vorschlag für leere Felder. */
+    private LocalDateTime referenceTime() {
+        ZoneId z = displayZone();
+        if (index != null && index.lineCount() > 0) {
+            try {
+                int line = table.getSelectedRow() >= 0 ? model.lineAt(table.getSelectedRow()) : 0;
+                String ts = index.timestampText(index.readLine(line));
+                Instant i = ts == null ? null : CellFormatter.parseInstant(ts);
+                if (i != null) return LocalDateTime.ofInstant(i, z).withNano(0);
+            } catch (IOException ignored) { }
         }
-        String input = timeField.getText().trim().replace('T', ' ').replace(',', '.');
-        if (input.isEmpty()) return;
+        return LocalDateTime.now(z).withNano(0);
+    }
+
+    private static int spinnerInt(JSpinner sp) {
+        try { sp.commitEdit(); } catch (java.text.ParseException ignored) { /* alter Wert */ }
+        return (Integer) sp.getValue();
+    }
+
+    private Instant parseField(DateTimeField f, String name, ZoneId z, LocalDate def) {
         try {
-            int ref = table.getSelectedRow() >= 0 ? model.lineAt(table.getSelectedRow()) : 0;
-            String refText = index.timestampText(index.readLine(ref));
-            Instant refInstant = refText == null ? null : CellFormatter.parseInstant(refText);
-            ZoneId zone = inputZone(refText);
+            return DateTimeField.toInstant(f.getText(), z, def);
+        } catch (DateTimeException ex) {
+            throw new DateTimeException("„" + name + "“ nicht erkannt: " + f.getText().trim()
+                    + "\n\nBeispiele: 2026-11-19 08:15:30   19.11.2026 08:15   08:15   2026-11-19T07:15:00Z");
+        }
+    }
 
-            Instant target;
-            if (OFFSET_SUFFIX.matcher(input).find() && input.matches("\\d{4}-.*")) {
-                target = CellFormatter.parseInstant(input.replace(' ', 'T'));
-            } else if (input.matches("\\d{1,2}:\\d{2}.*")) {
-                LocalTime t = LocalTime.parse(input, IN_TIME);
-                LocalDate day = refInstant != null ? refInstant.atZone(zone).toLocalDate() : LocalDate.now(zone);
-                target = day.atTime(t).atZone(zone).toInstant();
-            } else {
-                DateTimeFormatter f = input.matches("\\d{4}-.*") ? IN_ISO : IN_DE;
-                TemporalAccessor ta = f.parseBest(input, LocalDateTime::from, LocalDate::from);
-                LocalDateTime ldt = ta instanceof LocalDateTime l ? l : ((LocalDate) ta).atStartOfDay();
-                target = ldt.atZone(zone).toInstant();
-            }
-            if (target == null) throw new DateTimeParseException("ungültig", input, 0);
+    /** Zeitraum aus den Feldern Von/Bis; null, wenn beide leer sind. */
+    private LineRange timeRange() throws IOException {
+        if (fromField.getText().isBlank() && toField.getText().isBlank()) return null;
+        if (index.timestampSlots() == 0) throw new DateTimeException("In dieser Datei wurden keine Zeitstempel erkannt.");
+        ZoneId z = displayZone();
+        LocalDate def = referenceTime().toLocalDate();
+        Instant from = parseField(fromField, "Von", z, def);
+        Instant to = parseField(toField, "Bis", z, def);
+        if (from != null && to != null && from.isAfter(to)) throw new DateTimeException("„Von“ liegt nach „Bis“.");
+        int before = spinnerInt(extraBefore), after = spinnerInt(extraAfter);
+        int lines = index.lineCount();
+        int start = from == null ? 0 : index.findLineAtOrAfter(from.toEpochMilli());
+        int end = to == null ? lines : index.findLineAtOrAfter(to.toEpochMilli() + 1); // erste Zeile nach "Bis"
+        end = Math.max(end, start);
+        String desc = (from == null ? "…" : DateTimeField.format(LocalDateTime.ofInstant(from, z))) + " – "
+                + (to == null ? "…" : DateTimeField.format(LocalDateTime.ofInstant(to, z)))
+                + (before + after > 0 ? " (+" + before + "/+" + after + " Zeilen)" : "");
+        return new LineRange(Math.max(0, start - before), (int) Math.min(lines, (long) end + after), start, to == null, desc);
+    }
 
+    /** "Anwenden" / Enter in Von/Bis: Filter setzen und zur ersten Zeile im Zeitraum springen. */
+    private void applyTimeRange() {
+        if (index == null) return;
+        try {
+            LineRange r = timeRange();
+            applyFilter(r == null ? -1 : Math.min(r.first(), Math.max(0, index.lineCount() - 1)), false);
+        } catch (DateTimeException ex) {
+            JOptionPane.showMessageDialog(this, ex.getMessage(), "Zeitraum", JOptionPane.ERROR_MESSAGE);
+        } catch (IOException ex) {
+            error("Lesefehler", ex);
+        }
+    }
+
+    private void clearTimeRange() {
+        fromField.setText("");
+        toField.setText("");
+        extraBefore.setValue(0);
+        extraAfter.setValue(0);
+    }
+
+    /** Springt zur ersten Zeile ab "Von" (ohne zu filtern); nutzt den Zeitstempel-Index (jede 20. Zeile). */
+    private void gotoFrom() {
+        if (index == null || index.timestampSlots() == 0) return;
+        try {
+            ZoneId z = displayZone();
+            Instant target = parseField(fromField, "Von", z, referenceTime().toLocalDate());
+            if (target == null) return;
             int line = index.findLineAtOrAfter(target.toEpochMilli());
             if (line < 0) return;
-            int row = model.nearestViewRow(line);
+            int row = model.nearestViewRow(Math.min(line, index.lineCount() - 1));
             if (row < 0) {
                 filterStatus.setText("Zeit: keine Zeile im Filter");
                 return;
             }
             selectRow(row);
             String found = index.timestampText(index.readLine(model.lineAt(row)));
-            filterStatus.setText("Zeit " + target.atZone(zone).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss xxx"))
+            filterStatus.setText("Zeit " + DateTimeField.format(LocalDateTime.ofInstant(target, z))
                     + " → Zeile " + (model.lineAt(row) + 1) + (found != null ? " (" + found + ")" : ""));
         } catch (DateTimeException ex) {
-            Toolkit.getDefaultToolkit().beep();
-            JOptionPane.showMessageDialog(this, "Zeitpunkt nicht erkannt: " + timeField.getText()
-                    + "\n\nBeispiele: 2026-11-19 08:15:30   19.11.2026 08:15   08:15   2026-11-19T07:15:00Z",
-                    "Zeitsuche", JOptionPane.ERROR_MESSAGE);
+            JOptionPane.showMessageDialog(this, ex.getMessage(), "Zeitraum", JOptionPane.ERROR_MESSAGE);
         } catch (IOException ex) {
             error("Lesefehler", ex);
         }
+    }
+
+    /** Rechtsklick → Umliegender Zeitraum…: Dialog mit dem Zeitstempel der ausgewählten Zeile. */
+    private void showSurroundingRange() {
+        int r = table.getSelectedRow();
+        if (r < 0 || index == null) return;
+        int line = model.lineAt(r);
+        ZoneId z = displayZone();
+        Instant i;
+        try {
+            String ts = index.timestampText(index.readLine(line));
+            i = ts == null ? null : CellFormatter.parseInstant(ts);
+        } catch (IOException ex) {
+            error("Lesefehler", ex);
+            return;
+        }
+        if (i == null) {
+            JOptionPane.showMessageDialog(this, "Die ausgewählte Zeile hat keinen erkannten Zeitstempel.",
+                    "Umliegender Zeitraum", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        TimeRangeDialog.Range res = TimeRangeDialog.show(this, LocalDateTime.ofInstant(i, z), z, zoneName(z));
+        if (res == null) return;
+        fromField.setDateTime(res.from());
+        toField.setDateTime(res.to());
+        extraBefore.setValue(res.linesBefore());
+        extraAfter.setValue(res.linesAfter());
+        applyFilter(line, false); // ausgewählte Zeile bleibt ausgewählt
     }
 
     /**
@@ -1528,7 +1694,9 @@ public final class JsonLogViewer extends JFrame {
                     tailBusy = false;
                     if (index != idx || model != m) return;
                     if (oldLines > 0) m.invalidateLine(oldLines - 1);
-                    if (filter != null && activeFilter == filter) {
+                    if (filter != null && activeFilter == filter && rangeReapplyOnTail) {
+                        applyFilter(-1, true); // Zeitraum bis zum Dateiende: neu berechnen
+                    } else if (filter != null && activeFilter == filter) {
                         m.replaceFilterTail(filterFrom, hits[0], hc[0]);
                         filteredUpTo = newLines;
                         filterStatus.setText(String.format("Filter: %,d Treffer (Tail)", m.getRowCount()));

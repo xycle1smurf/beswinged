@@ -251,7 +251,7 @@ public final class LineIndex implements Closeable {
             long t = timestampMillis(readLine(i));
             if (t != Long.MIN_VALUE && t >= target) return i;
         }
-        return Math.min(to, lines - 1);
+        return to; // == lines: alle Zeitstempel liegen davor
     }
 
     // ------------------------------------------------------------------ Lesen

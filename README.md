@@ -56,7 +56,8 @@ Ohne Schema werden die Spalten automatisch aus den Top-Level-Feldern der ersten 
 | Strg+O / Strg+L / F5 | Log öffnen / Schema laden / Neu laden (Dateiauswahl filtert wahlweise `*.json`/`*.jsonl` oder `*.log`) |
 | Strg+S | Schema speichern unter… |
 | Strg+G | Gehe zu Zeile |
-| Zeit (Filterleiste) | Springt zur ersten Zeile ab einem Zeitpunkt, z.B. `2026-11-19 08:15:30`, `19.11.2026 08:15`, `08:15` (Datum der ausgewählten Zeile) oder `2026-11-19T07:15:00Z`. Ohne Offset gilt die Zeitzone, in der die Zeitstempel-Spalte angezeigt wird. Über den Index werden nur ca. 40 Zeilen gelesen und geparst, auch im Seek-Modus |
+| Zeitraum (dritte Filterzeile) | *Von* und *Bis* mit Kalender und Uhrzeit (Symbol rechts im Feld) oder getippt, z.B. `2026-11-19 08:15:30`, `19.11.2026 08:15`, `08:15` (Datum der ausgewÃ¤hlten Zeile) oder `2026-11-19T07:15:00Z`. Ein leeres Feld lÃ¤sst die Seite offen. *ZusÃ¤tzlich davor/danach* zeigt n Zeilen vor bzw. nach dem Zeitraum unabhÃ¤ngig von ihrer Zeit. Wirkt zusammen (UND) mit den anderen Filtern. Ohne Offset gilt die Zeitzone, in der die Zeitstempel-Spalte angezeigt wird (rechts angezeigt). *Gehe zu Von* springt ohne zu filtern. Ãber den Index werden je Grenze nur ca. 40 Zeilen gelesen, auch im Seek-Modus |
+| Rechtsklick â Umliegender Zeitraumâ¦ | Ãbernimmt den Zeitstempel der Zeile. WÃ¤hlbar: Zeitspanne (1 Min bis 12 h), Art (umliegend, nur davor, nur danach) und Zusatzzeilen davor/danach (Standard 10). FÃ¼llt Von/Bis und filtert; die Zeile bleibt ausgewÃ¤hlt |
 | Datei → Tail / Schreiben folgen (Strg+T) | Liest angehängte Zeilen alle 0,5 s nach. Aktive Filter und Auswahlwerte werden fortgeschrieben. Steht die Ansicht am Ende, scrollt sie mit |
 | Rechtsklick in der Tabelle | *Kopiere Zelle*: der Wert wie in der Detailansicht (formatiert, mit echten Zeilenumbrüchen und Unicode); außerdem Rohzeile(n) oder Zellen kopieren |
 
@@ -107,7 +108,7 @@ Nicht unterstützt: Anker/Aliase, mehrzeilige Strings (`|`, `>`), `{…}`-Flow-M
 ## Grenzen
 
 - Kein Sortieren (bei Millionen Zeilen wäre das teuer). Die Reihenfolge entspricht der Datei.
-- Die Zeitsuche setzt zeitlich sortierte Zeilen voraus (Binärsuche über den Zeitstempel-Index).
+- Zeitraum und Zeitsuche setzen zeitlich sortierte Zeilen voraus (Binärsuche über den Zeitstempel-Index).
 - Tail verfolgt die geöffnete Datei. Wird sie gekürzt, wird sie neu geladen. Nach einer Rotation
   (Umbenennen und neue Datei anlegen) bitte die neue Datei öffnen.
 - Einzelne Zeilen werden ab 64 MB abgeschnitten, Zelltexte ab 2.000 Zeichen.
