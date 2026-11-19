@@ -7,7 +7,11 @@ import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
 import java.io.File;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashMap;
+import java.util.Map;
+import javax.swing.JFormattedTextField;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -57,7 +61,8 @@ final class GeneratorDialog extends JDialog {
 
     private final Schema currentSchema;
     private final String currentLabel;
-    private Path chosenFile;
+    private final Map<String, Path> chosenFiles = new HashMap<>(); // Combo-Eintrag -> Schema-Datei
+    private Object lastSchemaSelection = STANDARD;
     private AtomicBoolean running;
 
     GeneratorDialog(JFrame owner, File dir, Schema currentSchema, String currentName, Result result) {
@@ -71,7 +76,17 @@ final class GeneratorDialog extends JDialog {
         schemaBox.setToolTipText("Mit Schema werden genau dessen Spaltenpfade befüllt, passend zum Spaltennamen");
         schemaBox.addActionListener(e -> {
             if (CHOOSE.equals(schemaBox.getSelectedItem())) chooseSchemaFile(dir);
+            else lastSchemaSelection = schemaBox.getSelectedItem();
         });
+
+        // Getippten Text beim Verlassen des Felds nicht stillschweigend auf den alten Wert zurücksetzen;
+        // geprüft wird beim Erzeugen (readSpinner) mit Fehlermeldung.
+        spinnerField(lines).setFocusLostBehavior(JFormattedTextField.PERSIST);
+        spinnerField(interval).setFocusLostBehavior(JFormattedTextField.PERSIST);
+        // Enter in einem Eingabefeld startet das Erzeugen (die Zahlenfelder schlucken Enter sonst)
+        spinnerField(lines).addActionListener(e -> start(result));
+        spinnerField(interval).addActionListener(e -> start(result));
+        target.addActionListener(e -> start(result));
 
         String stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
         target.setText(new File(dir, "generated-" + stamp + ".jsonl").getAbsolutePath());
@@ -127,31 +142,83 @@ final class GeneratorDialog extends JDialog {
         JFileChooser fc = new JFileChooser(dir);
         fc.setFileFilter(new FileNameExtensionFilter("Schema (YAML, Properties)", "yaml", "yml", "properties"));
         if (fc.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
-            chosenFile = fc.getSelectedFile().toPath();
-            String label = "Datei: " + chosenFile.getFileName();
-            schemaBox.insertItemAt(label, schemaBox.getItemCount() - 1);
+            Path file = fc.getSelectedFile().toPath();
+            String label = "Datei: " + file.toAbsolutePath();
+            if (!chosenFiles.containsKey(label)) schemaBox.insertItemAt(label, schemaBox.getItemCount() - 1);
+            chosenFiles.put(label, file);
             schemaBox.setSelectedItem(label);
         } else {
-            schemaBox.setSelectedIndex(0);
+            schemaBox.setSelectedItem(lastSchemaSelection); // Abbruch: vorherige Auswahl behalten
+        }
+    }
+
+    private static JFormattedTextField spinnerField(JSpinner s) {
+        return ((JSpinner.DefaultEditor) s.getEditor()).getTextField();
+    }
+
+    /**
+     * Übernimmt den getippten Text eines Zahlenfelds. Ohne das gilt bei Enter oder ungültiger
+     * Eingabe stillschweigend der alte Wert.
+     * @return Wert oder null (Fehlermeldung wurde angezeigt)
+     */
+    private Integer readSpinner(JSpinner s, String name) {
+        JFormattedTextField f = spinnerField(s);
+        SpinnerNumberModel m = (SpinnerNumberModel) s.getModel();
+        String text = f.getText().trim().replace(".", "").replace(",", "").replace(" ", "").replace(" ", "");
+        try {
+            long v = Long.parseLong(text);
+            if (v < ((Number) m.getMinimum()).longValue() || v > ((Number) m.getMaximum()).longValue()) throw new NumberFormatException();
+            s.setValue((int) v);
+            return (int) v;
+        } catch (NumberFormatException ex) {
+            JOptionPane.showMessageDialog(this, String.format("%s: \"%s\" ist ungültig.%nErlaubt sind ganze Zahlen von %,d bis %,d.",
+                    name, f.getText(), m.getMinimum(), m.getMaximum()), "Ungültige Eingabe", JOptionPane.ERROR_MESSAGE);
+            f.requestFocusInWindow();
+            f.selectAll();
+            return null;
         }
     }
 
     private void start(Result result) {
-        int count = (Integer) lines.getValue();
-        int step = (Integer) interval.getValue();
-        Path out = Path.of(target.getText().trim());
+        if (running != null && !generate.isEnabled()) return; // läuft bereits
+        Integer countValue = readSpinner(lines, "Anzahl Zeilen");
+        if (countValue == null) return;
+        Integer stepValue = readSpinner(interval, "Abstand (Sekunden)");
+        if (stepValue == null) return;
+        int count = countValue;
+        int step = stepValue;
+
+        String targetText = target.getText().trim();
+        if (targetText.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "Bitte eine Zieldatei angeben.", "Zieldatei", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        Path out = Path.of(targetText).toAbsolutePath();
+        if (Files.isDirectory(out)) {
+            JOptionPane.showMessageDialog(this, "Die Zieldatei ist ein Verzeichnis:\n" + out, "Zieldatei", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        if (out.getParent() != null && !Files.isDirectory(out.getParent())) {
+            JOptionPane.showMessageDialog(this, "Das Verzeichnis existiert nicht:\n" + out.getParent(), "Zieldatei", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        if (Files.exists(out) && JOptionPane.showConfirmDialog(this, "Die Datei existiert bereits. Überschreiben?\n" + out,
+                "Zieldatei", JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return;
+
         Object sel = schemaBox.getSelectedItem();
         Schema schema;
         Path schemaFile = null;
         try {
-            if (STANDARD.equals(sel)) schema = null;
-            else if (sel != null && sel.equals(currentLabel)) schema = currentSchema;
-            else if (chosenFile != null) { schemaFile = chosenFile; schema = Schema.load(chosenFile); }
-            else schema = null;
+            if (sel != null && sel.equals(currentLabel)) schema = currentSchema;
+            else if (sel != null && chosenFiles.containsKey(sel.toString())) {
+                schemaFile = chosenFiles.get(sel.toString());
+                schema = Schema.load(schemaFile);
+            } else schema = null; // Logstash-Standard
         } catch (Exception ex) {
             JOptionPane.showMessageDialog(this, "Schema konnte nicht geladen werden:\n" + ex.getMessage(), "Fehler", JOptionPane.ERROR_MESSAGE);
             return;
         }
+        boolean open = openAfter.isSelected();
 
         generate.setEnabled(false);
         progress.setVisible(true);
@@ -169,7 +236,7 @@ final class GeneratorDialog extends JDialog {
                 if (stop.get()) return;
                 EventQueue.invokeLater(() -> {
                     dispose();
-                    if (openAfter.isSelected()) result.open(out, schema, fSchemaFile);
+                    if (open) result.open(out, schema, fSchemaFile);
                 });
             } catch (Exception ex) {
                 EventQueue.invokeLater(() -> {
