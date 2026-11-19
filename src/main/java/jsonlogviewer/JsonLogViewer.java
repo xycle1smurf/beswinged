@@ -148,17 +148,13 @@ public final class JsonLogViewer extends JFrame {
     private String lastSavedSnapshot;
     private String lastDetailKey;
 
-    private AtomicBoolean indexCancel = new AtomicBoolean();
     private AtomicBoolean filterCancel = new AtomicBoolean();
     private volatile int filterProgress = -1; // Promille, -1 = kein Filter aktiv
-    private long indexStartNanos;
-    private long indexMillis = -1;
 
     // Tail / Zeitsuche / Datei-Modus
     static final long SEEK_THRESHOLD = 1L << 30; // ab 1 GB per Seek-Index
     private final JCheckBoxMenuItem tailItem = new JCheckBoxMenuItem("Tail / Schreiben folgen");
     private final JCheckBoxMenuItem seekItem = new JCheckBoxMenuItem("Datei-Index (Seek)");
-    private Runnable afterIndexed; // einmalig nach dem Indizieren (z.B. Filter nach Moduswechsel)
     private final Timer tailTimer = new Timer(500, e -> tailPoll());
     private boolean tailBusy;
     // Zeitraum (Von/Bis + Zusatzzeilen)
@@ -274,7 +270,7 @@ public final class JsonLogViewer extends JFrame {
 
         new Timer(200, e -> tick()).start();
         addWindowListener(new WindowAdapter() {
-            @Override public void windowClosed(WindowEvent e) { flushSave(); closeIndex(); System.exit(0); }
+            @Override public void windowClosed(WindowEvent e) { flushSave(); saveOpenFiles(); closeAll(); System.exit(0); }
         });
         updateFilterControls();
         rebuildScopeBox();
@@ -286,6 +282,15 @@ public final class JsonLogViewer extends JFrame {
         JMenuBar bar = new JMenuBar();
         JMenu file = new JMenu("Datei");
         file.add(item("Log öffnen…", KeyEvent.VK_O, e -> chooseLog()));
+        JMenu recentFiles = new JMenu("Zuletzt geöffnet");
+        recentFiles.addMenuListener(new MenuListener() {
+            @Override public void menuSelected(MenuEvent e) { fillRecentFilesMenu(recentFiles); }
+            @Override public void menuDeselected(MenuEvent e) { }
+            @Override public void menuCanceled(MenuEvent e) { }
+        });
+        file.add(recentFiles);
+        file.add(item("Schließen", KeyEvent.VK_W, e -> closeCurrent(true)));
+        file.addSeparator();
         file.add(item("Neu laden", KeyEvent.VK_F5, e -> reload()));
         tailItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_T, Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx()));
         tailItem.setToolTipText("Neu angehängte Zeilen laufend einlesen und ans Ende scrollen");
@@ -332,6 +337,8 @@ public final class JsonLogViewer extends JFrame {
         bar.add(view);
         bar.add(nav);
         bar.add(extras);
+        fillWindowMenu();
+        bar.add(windowMenu);
         setJMenuBar(bar);
     }
 
@@ -346,20 +353,40 @@ public final class JsonLogViewer extends JFrame {
 
     /** Öffnet ein erzeugtes Log mit dem dafür verwendeten Schema. */
     private void openGenerated(Path log, Schema schema, Path file) {
+        // Schema gilt nur für die neue Datei; die angezeigte Datei behält ihres
+        Schema s;
+        Path sf = null;
         if (file != null) {
-            loadSchema(file);
+            try {
+                s = Schema.load(file);
+                sf = file;
+                Settings.get().rememberSchema(file, s.title);
+            } catch (Exception ex) {
+                error("Schema konnte nicht geladen werden: " + file, ex);
+                s = null;
+            }
         } else if (schema == null) {
             try (var in = JsonLogViewer.class.getResourceAsStream("logstash.schema.yaml")) {
-                configuredSchema = Schema.fromYaml(new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
-                schemaFile = null;
+                s = Schema.fromYaml(new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
             } catch (Exception ex) {
-                configuredSchema = null;
-                schemaFile = null;
+                s = null;
             }
         } else {
-            configuredSchema = schema; // aktuelles Schema beibehalten (schemaFile bleibt)
+            s = schema; // aktuelles Schema
+            sf = schemaFile;
         }
-        openLog(log);
+        pendingSchema = s;
+        pendingSchemaFile = sf;
+        pendingSchemaSet = true;
+        try {
+            Path abs = log.toAbsolutePath().normalize();
+            OpenFile existing = find(abs);
+            openLog(abs, existing != null ? existing.mode : defaultMode(abs), true); // überschriebene Datei neu einlesen
+        } finally {
+            pendingSchemaSet = false;
+            pendingSchema = null;
+            pendingSchemaFile = null;
+        }
     }
 
     private JMenuItem item(String text, int key, java.awt.event.ActionListener l) {
@@ -981,15 +1008,11 @@ public final class JsonLogViewer extends JFrame {
 
     /** Datei → Datei-Index (Seek): geöffnete Datei im anderen Modus neu laden; Filter und Auswahl bleiben. */
     private void switchMode(boolean seek) {
-        if (index == null) { seekItem.setSelected(false); return; }
+        if (current == null) { seekItem.setSelected(false); return; }
         LineIndex.Mode target = seek ? LineIndex.Mode.SEEK : LineIndex.Mode.RAM;
-        if (index.mode() == target) return;
-        SavedFilter state = currentFilter("Moduswechsel");
-        int line = table.getSelectedRow() >= 0 ? model.lineAt(table.getSelectedRow()) : -1;
-        LineIndex before = index;
-        openLog(index.path(), target);
-        seekItem.setSelected(index != null && index.mode() == LineIndex.Mode.SEEK); // Abbruch/Wechsel im Speicherdialog
-        if (index != before) afterIndexed = () -> applySavedFilter(state, line);
+        if (current.mode == target) return;
+        openLog(current.path, target, true); // merkt und stellt Filter und Auswahl wieder her
+        seekItem.setSelected(current != null && current.mode == LineIndex.Mode.SEEK); // Abbruch im Speicherdialog
     }
 
     private int columnByName(String name) {
@@ -1234,21 +1257,39 @@ public final class JsonLogViewer extends JFrame {
                 error("Schema konnte nicht geladen werden: " + schemaFile, ex);
             }
         }
-        if (index != null) openLog(index.path(), index.mode());
+        if (current != null) openLog(current.path, current.mode, true); // Filter und Auswahl bleiben
         else applySchema();
     }
 
     void openLog(Path file) {
-        openLog(file, defaultMode(file));
+        Path abs = file.toAbsolutePath().normalize();
+        OpenFile doc = find(abs);
+        openLog(abs, doc != null ? doc.mode : defaultMode(abs), false);
     }
 
     void openLog(Path file, LineIndex.Mode mode) {
+        openLog(file, mode, false);
+    }
+
+    /**
+     * Öffnet eine Datei (neuer Eintrag unten im Menü Fenster) oder zeigt sie an, wenn sie schon offen ist.
+     * @param reindex auch eine bereits offene Datei neu einlesen (Neu laden, Moduswechsel, gekürzte Datei)
+     */
+    void openLog(Path file, LineIndex.Mode mode, boolean reindex) {
+        Path abs = file.toAbsolutePath().normalize();
+        OpenFile doc = find(abs);
+        if (doc != null && !reindex && doc.mode == mode) {
+            activate(doc);
+            Settings.get().rememberFile(abs);
+            return;
+        }
         if (mode == LineIndex.Mode.RAM) {
             // Passt die Datei in den Heap? Sonst Seek anbieten.
             try {
-                long fileBytes = java.nio.file.Files.size(file);
+                long fileBytes = java.nio.file.Files.size(abs);
                 Runtime rt = Runtime.getRuntime();
-                long free = rt.maxMemory() - (rt.totalMemory() - rt.freeMemory()) - (index != null ? index.ramBytes() : 0);
+                long free = rt.maxMemory() - (rt.totalMemory() - rt.freeMemory())
+                        + (doc != null && doc.index != null ? doc.index.ramBytes() : 0); // wird beim Neu-Einlesen frei
                 if (fileBytes > free - (256L << 20)) {
                     int answer = JOptionPane.showConfirmDialog(this, String.format(
                             "Die Datei (%s) passt nicht sicher in den verfügbaren Speicher (%s).%n"
@@ -1263,56 +1304,286 @@ public final class JsonLogViewer extends JFrame {
                 // Fehler meldet das Öffnen
             }
         }
-        afterIndexed = null;
         flushSave();
-        closeIndex();
-        LineIndex idx;
-        try {
-            idx = new LineIndex(file, mode, timestampPathFor(configuredSchema));
-        } catch (IOException ex) {
-            error("Datei konnte nicht geöffnet werden: " + file, ex);
+        boolean isNew = doc == null;
+        if (isNew) {
+            doc = new OpenFile(abs, mode);
+            doc.schema = configuredSchema; // neue Datei übernimmt das aktuelle Schema
+            doc.schemaFile = schemaFile;
+        } else if (doc == current) {
+            storeState(doc); // Filter, Auswahl und Schema nach dem Neu-Einlesen wiederherstellen
+        }
+        if (pendingSchemaSet) { // Log-Generator: neues Schema, alter Filterzustand passt nicht mehr
+            doc.schema = pendingSchema;
+            doc.schemaFile = pendingSchemaFile;
+            doc.filter = null;
+            doc.selectedLine = -1;
+        }
+        LineIndex.Mode oldMode = doc.mode;
+        doc.mode = mode;
+        closeDocIndex(doc);
+        if (!startIndex(doc)) {
+            doc.mode = oldMode;
+            if (!isNew && doc == current) closeCurrent(false);
             return;
         }
-        index = idx;
-        zoneSample = null;
-        indexMillis = -1;
-        indexStartNanos = System.nanoTime();
-        AtomicBoolean cancel = new AtomicBoolean();
-        indexCancel = cancel;
-        applySchema();
-        progress.setVisible(true);
+        if (isNew) openFiles.add(doc);
+        if (doc == current) current = null; // erneut vollständig anzeigen (Zustand ist gemerkt)
+        activate(doc);
+        Settings.get().rememberFile(abs);
+    }
 
+    /** Legt den Index an und indiziert im Hintergrund. */
+    private boolean startIndex(OpenFile doc) {
+        LineIndex idx;
+        try {
+            idx = new LineIndex(doc.path, doc.mode, timestampPathFor(doc.schema));
+        } catch (IOException ex) {
+            error("Datei konnte nicht geöffnet werden: " + doc.path, ex);
+            return false;
+        }
+        AtomicBoolean cancel = new AtomicBoolean();
+        doc.index = idx;
+        doc.cancel = cancel;
+        doc.millis = -1;
+        doc.startNanos = System.nanoTime();
         Thread t = new Thread(() -> {
             try {
                 idx.build(cancel::get);
                 EventQueue.invokeLater(() -> {
-                    if (index == idx) {
-                        indexMillis = (System.nanoTime() - indexStartNanos) / 1_000_000;
+                    if (doc.index != idx) return;
+                    doc.millis = (System.nanoTime() - doc.startNanos) / 1_000_000;
+                    if (current == doc && index == idx) {
                         tick();
                         updateFilterControls();
                         startDistinctScan();
                         if (tailItem.isSelected()) scrollToEnd();
-                        Runnable after = afterIndexed;
-                        afterIndexed = null;
+                        Runnable after = doc.afterIndexed;
+                        doc.afterIndexed = null;
                         if (after != null) after.run();
                     }
                 });
             } catch (IOException ex) {
-                if (!cancel.get()) EventQueue.invokeLater(() -> error("Fehler beim Indizieren", ex));
+                if (!cancel.get()) EventQueue.invokeLater(() -> error("Fehler beim Indizieren: " + doc.path, ex));
             }
         }, "indexer");
         t.setDaemon(true);
         t.start();
+        return true;
     }
 
-    private void closeIndex() {
-        indexCancel.set(true);
+    // ================================================================== Offene Dateien (Menü Fenster)
+
+    /** Eine geöffnete Log-Datei mit ihrem Anzeigezustand. */
+    private static final class OpenFile {
+        final Path path;
+        LineIndex.Mode mode;
+        LineIndex index;                 // null = noch nicht eingelesen (aus den Einstellungen wiederhergestellt)
+        AtomicBoolean cancel = new AtomicBoolean();
+        long startNanos;
+        long millis = -1;
+        Schema schema;                   // null = automatisch
+        Path schemaFile;
+        SavedFilter filter;              // Filterzustand beim Wegschalten
+        int selectedLine = -1;
+        Runnable afterIndexed;           // nach dem Indizieren, sobald die Datei angezeigt wird
+
+        OpenFile(Path path, LineIndex.Mode mode) { this.path = path; this.mode = mode; }
+    }
+
+    private final List<OpenFile> openFiles = new ArrayList<>();
+    private OpenFile current;
+    private Schema pendingSchema;      // Schema für die nächste neu geöffnete Datei (Log-Generator)
+    private Path pendingSchemaFile;
+    private boolean pendingSchemaSet;
+    private final JMenu windowMenu = new JMenu("Fenster");
+
+    private OpenFile find(Path abs) {
+        for (OpenFile f : openFiles) if (f.path.equals(abs)) return f;
+        return null;
+    }
+
+    /** Merkt Schema, Filter und Auswahl der angezeigten Datei. */
+    private void storeState(OpenFile doc) {
+        doc.schema = configuredSchema;
+        doc.schemaFile = schemaFile;
+        if (doc.afterIndexed != null) return; // Wiederherstellung steht noch aus: Zustand nicht überschreiben
+        doc.filter = currentFilter("");
+        doc.selectedLine = table.getSelectedRow() >= 0 && index != null ? model.lineAt(table.getSelectedRow()) : -1;
+    }
+
+    /** Zeigt eine offene Datei an (liest sie bei Bedarf erst ein) und stellt ihren Zustand wieder her. */
+    private void activate(OpenFile doc) {
+        if (doc == current) return;
+        flushSave();
+        if (current != null) storeState(current);
+        if (doc.index == null && !startIndex(doc)) {
+            openFiles.remove(doc);
+            saveOpenFiles();
+            return;
+        }
+        current = doc;
         filterCancel.set(true);
         filterProgress = -1;
-        if (index != null) {
-            try { index.close(); } catch (IOException ignored) { }
-            index = null;
+        index = doc.index;
+        configuredSchema = doc.schema;
+        schemaFile = doc.schemaFile;
+        zoneSample = null;
+        resetFilterUi();
+        applySchema();
+        SavedFilter f = doc.filter;
+        int line = doc.selectedLine;
+        Runnable restore = () -> {
+            if (f != null) applySavedFilter(f, line);
+            else if (line >= 0 && model.getRowCount() > 0) selectRow(model.nearestViewRow(line));
+            if (tailItem.isSelected()) scrollToEnd();
+        };
+        if (doc.index.isComplete()) {
+            doc.afterIndexed = null;
+            updateFilterControls();
+            startDistinctScan();
+            restore.run();
+        } else doc.afterIndexed = restore;
+        tick();
+        saveOpenFiles();
+    }
+
+    /** Leert Text-, Auswahl-, Level-Filter und Zeitraum in der Oberfläche (ohne anzuwenden). */
+    private void resetFilterUi() {
+        filterField.setText("");
+        regexBox.setSelected(false);
+        invertBox.setSelected(false);
+        if (scopeBox.getItemCount() > 0) scopeBox.setSelectedIndex(0);
+        clearTimeRange();
+        resetChoiceWidgets();
+    }
+
+    private void closeDocIndex(OpenFile doc) {
+        doc.cancel.set(true);
+        doc.afterIndexed = null;
+        if (doc.index != null) {
+            if (doc.index == index) filterCancel.set(true);
+            try { doc.index.close(); } catch (IOException ignored) { }
+            doc.index = null;
         }
+    }
+
+    /**
+     * Datei → Schließen: angezeigte Datei schließen und aus Fenster entfernen. Angezeigt wird die Datei davor,
+     * sonst die danach, sonst ein leeres Fenster.
+     */
+    private void closeCurrent(boolean flush) {
+        if (flush) flushSave();
+        OpenFile doc = current;
+        int i = doc == null ? -1 : openFiles.indexOf(doc);
+        if (doc != null) {
+            closeDocIndex(doc);
+            openFiles.remove(doc);
+            current = null; // Zustand der geschlossenen Datei nicht merken
+        }
+        if (!openFiles.isEmpty()) {
+            activate(openFiles.get(i > 0 ? i - 1 : 0));
+            return;
+        }
+        index = null;
+        filterCancel.set(true);
+        filterProgress = -1;
+        resetFilterUi();
+        applySchema();
+        tick();
+        saveOpenFiles();
+    }
+
+    private void closeAll() {
+        for (OpenFile f : openFiles) closeDocIndex(f);
+        filterCancel.set(true);
+        index = null;
+    }
+
+    /** Liste für das Menü Fenster und die Einstellungen aktualisieren. */
+    private void saveOpenFiles() {
+        List<Settings.OpenEntry> entries = new ArrayList<>();
+        for (OpenFile f : openFiles) {
+            Path sch = f == current ? schemaFile : f.schemaFile;
+            entries.add(new Settings.OpenEntry(f.path, f.mode, sch));
+        }
+        Settings.get().setOpenFiles(entries, current == null ? null : current.path);
+        fillWindowMenu();
+    }
+
+    /** Beim Start: Dateien aus den Einstellungen übernehmen (eingelesen wird erst beim Anzeigen). */
+    void restoreOpenFiles() {
+        for (Settings.OpenEntry e : Settings.get().openFiles()) {
+            Path p = e.path().toAbsolutePath().normalize();
+            if (!java.nio.file.Files.isRegularFile(p) || find(p) != null) continue;
+            OpenFile doc = new OpenFile(p, e.mode());
+            if (e.schema() != null && java.nio.file.Files.isRegularFile(e.schema())) {
+                try {
+                    doc.schema = Schema.load(e.schema());
+                    doc.schemaFile = e.schema();
+                } catch (Exception ignored) {
+                    // automatisch erkennen
+                }
+            }
+            openFiles.add(doc);
+        }
+        fillWindowMenu();
+    }
+
+    /** Beim Start ohne Log-Argument: zuletzt angezeigte Datei anzeigen. */
+    void showRestoredActive() {
+        if (openFiles.isEmpty()) return;
+        Path active = Settings.get().activeFile();
+        OpenFile doc = active == null ? null : find(active.toAbsolutePath().normalize());
+        activate(doc != null ? doc : openFiles.get(openFiles.size() - 1));
+    }
+
+    private void fillWindowMenu() {
+        windowMenu.removeAll();
+        if (openFiles.isEmpty()) {
+            JMenuItem none = new JMenuItem("(keine Datei geöffnet)");
+            none.setEnabled(false);
+            windowMenu.add(none);
+            return;
+        }
+        ButtonGroup g = new ButtonGroup();
+        int n = 0;
+        for (OpenFile f : openFiles) {
+            n++;
+            String info = f.mode == LineIndex.Mode.SEEK ? "Seek" : "RAM";
+            JRadioButtonMenuItem mi = new JRadioButtonMenuItem(n + "  " + f.path.getFileName() + "   (" + info + ")");
+            mi.setToolTipText(f.path.toString());
+            mi.setSelected(f == current);
+            if (n <= 9) {
+                mi.setMnemonic(KeyEvent.VK_0 + n);
+                mi.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_0 + n, Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx()));
+            }
+            mi.addActionListener(e -> activate(f));
+            g.add(mi);
+            windowMenu.add(mi);
+        }
+    }
+
+    private void fillRecentFilesMenu(JMenu menu) {
+        menu.removeAll();
+        List<Path> files = Settings.get().recentFiles(20);
+        if (files.isEmpty()) {
+            JMenuItem none = new JMenuItem("(keine)");
+            none.setEnabled(false);
+            menu.add(none);
+            return;
+        }
+        int n = 0;
+        for (Path p : files) {
+            n++;
+            JMenuItem mi = new JMenuItem(n + "  " + p.getFileName() + "   —   " + (p.getParent() == null ? "" : p.getParent()));
+            if (n <= 9) mi.setMnemonic(KeyEvent.VK_0 + n);
+            mi.setToolTipText(p.toString());
+            mi.addActionListener(e -> openLog(p));
+            menu.add(mi);
+        }
+        menu.addSeparator();
+        menu.add(item("Liste leeren", 0, e -> Settings.get().clearRecentFiles()));
     }
 
     /** Erstellt ein neues Modell mit dem aktuellen Schema (Filter wird zurückgesetzt). */
@@ -1385,8 +1656,8 @@ public final class JsonLogViewer extends JFrame {
             int permille = size == 0 ? 0 : (int) (index.bytesScanned() * 1000 / size);
             sb.append("  —  indiziere… ").append(permille / 10).append('%');
             progress.setValue(permille);
-        } else if (indexMillis >= 0) {
-            sb.append("  —  indiziert in ").append(String.format("%.1f s", indexMillis / 1000.0));
+        } else if (current != null && current.millis >= 0) {
+            sb.append("  —  indiziert in ").append(String.format("%.1f s", current.millis / 1000.0));
         }
         if (schemaFile != null) sb.append("  —  Schema: ").append(schemaFile.getFileName());
         else if (configuredSchema != null) sb.append("  —  Schema: ").append(configuredSchema.title).append(" (nicht gespeichert)");
@@ -1930,7 +2201,7 @@ public final class JsonLogViewer extends JFrame {
                 if (added < 0) { // Datei wurde gekürzt/neu begonnen
                     EventQueue.invokeLater(() -> {
                         tailBusy = false;
-                        if (index == idx) openLog(idx.path(), idx.mode());
+                        if (index == idx) openLog(idx.path(), idx.mode(), true);
                     });
                     return;
                 }
@@ -2164,9 +2435,11 @@ public final class JsonLogViewer extends JFrame {
         EventQueue.invokeLater(() -> {
             try { UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName()); } catch (Exception ignored) { }
             JsonLogViewer v = new JsonLogViewer();
+            v.restoreOpenFiles(); // Menü Fenster wie beim letzten Mal
             if (fSchema != null) v.loadSchema(fSchema);
             if (fTail) v.setTail(true);
-            if (fLog != null) v.openLog(fLog, fMode != null ? fMode : defaultMode(fLog));
+            if (fLog != null) { if (fMode != null) v.openLog(fLog, fMode, true); else v.openLog(fLog); }
+            else if (fSchema == null) v.showRestoredActive();
             v.tick();
             v.setVisible(true);
         });

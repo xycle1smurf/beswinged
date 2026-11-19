@@ -55,16 +55,19 @@ Ohne Schema werden die Spalten automatisch aus den Top-Level-Feldern der ersten 
 | Ansicht | Spalten ein-/ausblenden, *Zeitzone* für alle Zeitstempel-Spalten |
 | Spaltenköpfe | Per Drag & Drop umsortieren. Rechtsklick: *Ausblenden*, *Zeitzone* (bei Zeitstempeln), *Package original / compact / Class only* (bei Klassennamen), *Auswahlfilter*, *Spaltentyp Loglevel* |
 | Extras → Log-Generator | Erzeugt ein Beispiel-Log mit wählbarer Zeilenzahl und wählbarem Zeitabstand. Entweder im Logstash-Format oder passend zu einem Schema: Jeder Spaltenpfad wird anhand seines Namens befüllt |
-| Strg+O / Strg+L / F5 | Log öffnen / Schema laden / Neu laden (Dateiauswahl filtert wahlweise `*.json`/`*.jsonl` oder `*.log`) |
+| Strg+O / Strg+L / F5 | Log öffnen / Schema laden / Neu laden (Dateiauswahl filtert wahlweise `*.json`/`*.jsonl` oder `*.log`). Neu laden behält Filter und Auswahl |
+| Menü Fenster | Alle geöffneten Logdateien (RAM oder Seek) in Öffnungsreihenfolge, die zuletzt geöffnete unten. Strg+1 … Strg+9 wechselt. Jede Datei behält ihr Schema, ihre Filter, ihren Zeitraum und die ausgewählte Zeile. Eine bereits offene Datei erneut zu öffnen wechselt nur zu ihr |
+| Datei → Schließen (Strg+W) | Schließt die angezeigte Datei und entfernt sie aus *Fenster*. Angezeigt wird dann die Datei davor, sonst die danach, sonst ein leeres Fenster |
+| Datei → Zuletzt geöffnet | Die 20 zuletzt geöffneten Logdateien, soweit sie noch existieren. *Liste leeren* entfernt alle |
 | Strg+S | Schema speichern unter… |
 | Strg+G | Gehe zu Zeile |
-| Zeitraum (dritte Filterzeile) | *Von* und *Bis* mit Kalender und Uhrzeit (Symbol rechts im Feld) oder getippt, z.B. `2026-11-19 08:15:30`, `19.11.2026 08:15`, `08:15` (Datum der ausgewÃ¤hlten Zeile) oder `2026-11-19T07:15:00Z`. Ein leeres Feld lÃ¤sst die Seite offen. *ZusÃ¤tzlich davor/danach* zeigt n Zeilen vor bzw. nach dem Zeitraum unabhÃ¤ngig von ihrer Zeit. Wirkt zusammen (UND) mit den anderen Filtern. Ohne Offset gilt die Zeitzone, in der die Zeitstempel-Spalte angezeigt wird (rechts angezeigt). *Gehe zu Von* springt ohne zu filtern. Ãber den Index werden je Grenze nur ca. 40 Zeilen gelesen, auch im Seek-Modus |
-| Rechtsklick â Umliegender Zeitraumâ¦ | Ãbernimmt den Zeitstempel der Zeile. WÃ¤hlbar: Zeitspanne (1 Min bis 12 h), Art (umliegend, nur davor, nur danach) und Zusatzzeilen davor/danach (Standard 10). FÃ¼llt Von/Bis und filtert; die Zeile bleibt ausgewÃ¤hlt |
+| Zeitraum (dritte Filterzeile) | *Von* und *Bis* mit Kalender und Uhrzeit (Symbol rechts im Feld) oder getippt, z.B. `2026-11-19 08:15:30`, `19.11.2026 08:15`, `08:15` (Datum der ausgewählten Zeile) oder `2026-11-19T07:15:00Z`. Ein leeres Feld lässt die Seite offen. *Zusätzlich davor/danach* zeigt n Zeilen vor bzw. nach dem Zeitraum unabhängig von ihrer Zeit. Wirkt zusammen (UND) mit den anderen Filtern. Ohne Offset gilt die Zeitzone, in der die Zeitstempel-Spalte angezeigt wird (rechts angezeigt). *Gehe zu Von* springt ohne zu filtern. Über den Index werden je Grenze nur ca. 40 Zeilen gelesen, auch im Seek-Modus |
+| Rechtsklick → Umliegender Zeitraum… | Übernimmt den Zeitstempel der Zeile. Wählbar: Zeitspanne (1 Min bis 12 h), Art (umliegend, nur davor, nur danach) und Zusatzzeilen davor/danach (Standard 10). Füllt Von/Bis und filtert; die Zeile bleibt ausgewählt |
 | Datei → Tail / Schreiben folgen (Strg+T) | Liest angehängte Zeilen alle 0,5 s nach. Aktive Filter und Auswahlwerte werden fortgeschrieben. Steht die Ansicht am Ende, scrollt sie mit |
-| Rechtsklick in der Tabelle | *Kopiere Zelle*: der Wert wie in der Detailansicht (formatiert, mit echten ZeilenumbrÃ¼chen und Unicode). *Kopiere als Markdown*: die ausgewÃ¤hlten Zeilen fÃ¼r Dokumentationen, je Zeile eine Ãberschrift, kurze Werte als Liste, mehrzeilige Werte (Nachricht, Stacktrace, JSON) als Codeblock. AuÃerdem Rohzeile(n) oder Zellen (Tab-getrennt) kopieren |
-| MenÃ¼ Schema | Laden, automatisch erkennen, speichern unter und die **20 zuletzt geÃ¶ffneten Schemas**. Jedes geÃ¶ffnete Schema wird nach `~/.beswinged/schemas/` kopiert; fehlt das Original, Ã¶ffnet der Eintrag die Kopie |
-| MenÃ¼ Filter | *Speichern alsâ¦* legt Textfilter, Auswahl- und Level-Filter sowie Zeitraum unter einem Namen in `~/.beswinged/filters/<Name>.yaml` ab. Darunter die gespeicherten Filter zum Anwenden, unter *LÃ¶schen* zum Entfernen. Spalten werden Ã¼ber ihren Namen zugeordnet |
-| Ansicht â Einstellungenâ¦ | Darstellung ganzer Zeilen je Loglevel: fett, kursiv, Schriftfarbe. Standard: WARN, ERROR und FATAL fett, TRACE dunkelgrau |
+| Rechtsklick in der Tabelle | *Kopiere Zelle*: der Wert wie in der Detailansicht (formatiert, mit echten Zeilenumbrüchen und Unicode). *Kopiere als Markdown*: die ausgewählten Zeilen für Dokumentationen, je Zeile eine Überschrift, kurze Werte als Liste, mehrzeilige Werte (Nachricht, Stacktrace, JSON) als Codeblock. Außerdem Rohzeile(n) oder Zellen (Tab-getrennt) kopieren |
+| Menü Schema | Laden, automatisch erkennen, speichern unter und die **20 zuletzt geöffneten Schemas**. Jedes geöffnete Schema wird nach `~/.beswinged/schemas/` kopiert; fehlt das Original, öffnet der Eintrag die Kopie |
+| Menü Filter | *Speichern als…* legt Textfilter, Auswahl- und Level-Filter sowie Zeitraum unter einem Namen in `~/.beswinged/filters/<Name>.yaml` ab. Darunter die gespeicherten Filter zum Anwenden, unter *Löschen* zum Entfernen. Spalten werden über ihren Namen zugeordnet |
+| Ansicht → Einstellungen… | Darstellung ganzer Zeilen je Loglevel: fett, kursiv, Schriftfarbe. Standard: WARN, ERROR und FATAL fett, TRACE dunkelgrau |
 
 Alle Filter wirken gemeinsam (UND). *Zurücksetzen* in der Filterleiste leert alle.
 
@@ -112,13 +115,15 @@ Nicht unterstützt: Anker/Aliase, mehrzeilige Strings (`|`, `>`), `{…}`-Flow-M
 
 ## Einstellungen
 
-Alles Benutzerbezogene liegt in `~/.beswinged/` (unter Windows `%USERPROFILE%.beswinged`):
+Alles Benutzerbezogene liegt in `~/.beswinged/` (unter Windows `%USERPROFILE%\.beswinged`):
 
-- `settings.yaml`: letztes Verzeichnis, Loglevel-Darstellung, zuletzt geÃ¶ffnete Schemas, Vorgaben fÃ¼r *Umliegender Zeitraum*
-- `schemas/`: Kopien der zuletzt geÃ¶ffneten Schemas (Cache)
+- `settings.yaml`: letztes Verzeichnis, Loglevel-Darstellung, zuletzt geöffnete Schemas, Vorgaben für *Umliegender Zeitraum*,
+  offene Dateien mit Modus und Schema (`openFiles`, `activeFile`) und zuletzt geöffnete Dateien (`recentFiles`).
+  Beim Start werden die offenen Dateien wiederhergestellt; eingelesen wird zunächst nur die aktive, die übrigen beim ersten Anzeigen
+- `schemas/`: Kopien der zuletzt geöffneten Schemas (Cache)
 - `filters/`: gespeicherte Filter, je Datei ein Filter
 
-Mit `-Dbeswinged.home=<Ordner>` lÃ¤sst sich ein anderes Verzeichnis verwenden.
+Mit `-Dbeswinged.home=<Ordner>` lässt sich ein anderes Verzeichnis verwenden.
 
 ## Grenzen
 

@@ -38,6 +38,13 @@ final class Settings {
     private String lastDir;
     private final List<RecentSchema> recent = new ArrayList<>();
     private final Map<Integer, LevelStyle> levelStyles = new LinkedHashMap<>(); // Rang -> Stil
+    /** Geöffnete Datei im Menü Fenster (Reihenfolge = Menü). */
+    record OpenEntry(Path path, LineIndex.Mode mode, Path schema) {}
+
+    private final List<OpenEntry> openFiles = new ArrayList<>();
+    private Path activeFile;
+    private final List<Path> recentFiles = new ArrayList<>(); // neueste zuerst
+    private static final int KEEP_RECENT_FILES = 50;          // gemerkt; angezeigt werden 20 vorhandene
     private int rangeSpan = 1;
     private String rangeKind = "around";
     private String loadError;
@@ -101,6 +108,43 @@ final class Settings {
 
     void resetLevelStyles() {
         defaults();
+        save();
+    }
+
+    // ------------------------------------------------------------------ offene und zuletzt geöffnete Dateien
+
+    List<OpenEntry> openFiles() { return List.copyOf(openFiles); }
+    Path activeFile() { return activeFile; }
+
+    void setOpenFiles(List<OpenEntry> entries, Path active) {
+        if (entries.equals(openFiles) && java.util.Objects.equals(active, activeFile)) return;
+        openFiles.clear();
+        openFiles.addAll(entries);
+        activeFile = active;
+        save();
+    }
+
+    /** Die neuesten zuerst; nur noch vorhandene Dateien, höchstens {@code max}. */
+    List<Path> recentFiles(int max) {
+        List<Path> l = new ArrayList<>();
+        for (Path p : recentFiles) {
+            if (l.size() >= max) break;
+            if (Files.isRegularFile(p)) l.add(p);
+        }
+        return l;
+    }
+
+    void rememberFile(Path file) {
+        Path abs = file.toAbsolutePath().normalize();
+        if (!recentFiles.isEmpty() && recentFiles.get(0).equals(abs)) return;
+        recentFiles.remove(abs);
+        recentFiles.add(0, abs);
+        while (recentFiles.size() > KEEP_RECENT_FILES) recentFiles.remove(recentFiles.size() - 1);
+        save();
+    }
+
+    void clearRecentFiles() {
+        recentFiles.clear();
         save();
     }
 
@@ -171,6 +215,18 @@ final class Settings {
                 if (recent.size() >= MAX_RECENT) break;
             }
         }
+        if (m.get("openFiles") instanceof List<?> l) {
+            for (Object o : l) {
+                if (!(o instanceof Map<?, ?> e) || !(e.get("path") instanceof String p) || p.isBlank()) continue;
+                LineIndex.Mode mode = "seek".equalsIgnoreCase(str(e.get("mode"))) ? LineIndex.Mode.SEEK : LineIndex.Mode.RAM;
+                String sch = str(e.get("schema"));
+                openFiles.add(new OpenEntry(Path.of(p), mode, sch.isBlank() ? null : Path.of(sch)));
+            }
+        }
+        if (m.get("activeFile") instanceof String s && !s.isBlank()) activeFile = Path.of(s);
+        if (m.get("recentFiles") instanceof List<?> l) {
+            for (Object o : l) if (o instanceof String s && !s.isBlank() && recentFiles.size() < KEEP_RECENT_FILES) recentFiles.add(Path.of(s));
+        }
         if (m.get("levelStyles") instanceof List<?> l) {
             levelStyles.clear();
             for (Object o : l) {
@@ -207,6 +263,15 @@ final class Settings {
             if (s.italic()) sb.append("    italic: true\n");
             if (s.foreground() != null) sb.append("    color: ").append(q(hex(s.foreground()))).append('\n');
         }
+        sb.append(openFiles.isEmpty() ? "\nopenFiles: []\n" : "\n# Menü Fenster, in dieser Reihenfolge\nopenFiles:\n");
+        for (OpenEntry e : openFiles) {
+            sb.append("  - path: ").append(q(e.path().toString())).append('\n');
+            sb.append("    mode: ").append(e.mode() == LineIndex.Mode.SEEK ? "seek" : "ram").append('\n');
+            if (e.schema() != null) sb.append("    schema: ").append(q(e.schema().toString())).append('\n');
+        }
+        if (activeFile != null) sb.append("activeFile: ").append(q(activeFile.toString())).append('\n');
+        sb.append(recentFiles.isEmpty() ? "\nrecentFiles: []\n" : "\nrecentFiles:\n");
+        for (Path p : recentFiles) sb.append("  - ").append(q(p.toString())).append('\n');
         sb.append(recent.isEmpty() ? "\nrecentSchemas: []\n" : "\nrecentSchemas:\n");
         for (RecentSchema r : recent) {
             sb.append("  - source: ").append(q(r.source().toString())).append('\n');
