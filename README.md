@@ -49,7 +49,7 @@ Ohne Schema werden die Spalten automatisch aus den Top-Level-Feldern der ersten 
 | | |
 |---|---|
 | Filter | Teilstring (Groß-/Kleinschreibung egal) oder Regex, wahlweise auf die ganze Zeile oder eine Spalte; *Nicht* invertiert |
-| Auswahlfilter | Zweite Filterzeile: Dropdown mit allen vorkommenden Werten einer Spalte. Tippen sucht, Enter/Leertaste/Klick wählt an oder ab, mehrere Werte möglich. Wird beim Schließen angewendet |
+| Auswahlfilter | Zweite Filterzeile: Dropdown mit allen vorkommenden Werten einer Spalte. Tippen sucht, Enter/Leertaste/Klick wählt an oder ab, mehrere Werte möglich. Wird beim Schließen angewendet. Bei Paket-/Klassennamen (z.B. Logger) erscheinen zusätzlich die gemeinsamen Pakete hierarchisch eingerückt, z.B. `org.example.*  (12)`: Auswahl trifft alle Werte darunter. Gespeicherte Filter merken sich solche Paket-Einträge ebenfalls |
 | Loglevel-Filter | Bei Spalten vom Typ Loglevel: „≥ WARN“ zeigt WARN, ERROR und FATAL. Kennt Log4j, Logback und JUL (FINEST … SEVERE) |
 | Detailansicht | Klick auf `#`: ganze Zeile als formatiertes JSON. Klick auf eine andere Zelle: nur deren Wert, `\n` als echter Zeilenumbruch, `\uXXXX` als Zeichen |
 | Ansicht | Spalten ein-/ausblenden, *Zeitzone* für alle Zeitstempel-Spalten |

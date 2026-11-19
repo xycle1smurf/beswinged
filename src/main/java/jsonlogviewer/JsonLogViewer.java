@@ -1423,7 +1423,7 @@ public final class JsonLogViewer extends JFrame {
     private record ColumnCondition(Schema.Column col, Set<String> allowed, int minRank) {
         boolean test(Object root, String line) {
             String v = LogTableModel.displayValue(col, root, line);
-            if (allowed != null && !allowed.contains(v)) return false;
+            if (allowed != null && !ChoiceFilterButton.matches(allowed, v)) return false;
             return minRank <= 0 || LogLevels.rank(v) >= minRank;
         }
     }

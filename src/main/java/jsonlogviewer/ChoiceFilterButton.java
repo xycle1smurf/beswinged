@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import javax.swing.BorderFactory;
 import javax.swing.DefaultListModel;
@@ -48,6 +49,10 @@ public final class ChoiceFilterButton extends JButton {
     private boolean loading = true;
     private boolean overflow;
     private final Set<String> selected = new LinkedHashSet<>();
+    private List<String> entries;          // Werte + Präfixe (Cache, gilt für entriesFor)
+    private List<String> entriesFor;
+    private final Map<String, Integer> prefixCount = new java.util.HashMap<>();
+    private final Map<String, Integer> depth = new java.util.HashMap<>();
 
     public ChoiceFilterButton(String columnName, Runnable onChange) {
         this.columnName = columnName;
@@ -131,6 +136,71 @@ public final class ChoiceFilterButton extends JButton {
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
+    // ------------------------------------------------------------------ Paket-Präfixe
+
+    /** Endung eines Präfix-Eintrags: "org.example.*" wählt alle Werte unterhalb von "org.example". */
+    public static final String PREFIX_SUFFIX = ".*";
+
+    public static boolean isPrefix(String s) { return s.endsWith(PREFIX_SUFFIX) && s.length() > PREFIX_SUFFIX.length(); }
+
+    /** "org.example.*" -> "org.example" */
+    private static String base(String prefix) { return prefix.substring(0, prefix.length() - PREFIX_SUFFIX.length()); }
+
+    /** Trifft {@code v} die Auswahl? Exakter Wert oder unterhalb eines gewählten Paket-Präfixes. */
+    public static boolean matches(Set<String> allowed, String v) {
+        if (allowed.contains(v)) return true;
+        for (String a : allowed) {
+            if (!isPrefix(a)) continue;
+            String b = base(a);
+            if (v.length() > b.length() ? v.startsWith(b) && v.charAt(b.length()) == '.' : v.equals(b)) return true;
+        }
+        return false;
+    }
+
+    /** Ist {@code v} nur über ein gewähltes Präfix abgedeckt (für die Anzeige)? */
+    private boolean coveredByPrefix(String v) {
+        if (selected.contains(v)) return false;
+        for (String a : selected) {
+            if (!isPrefix(a) || a.equals(v)) continue;
+            String b = base(a);
+            String t = isPrefix(v) ? base(v) : v;
+            if (t.length() > b.length() ? t.startsWith(b) && t.charAt(b.length()) == '.' : t.equals(b)) return true;
+        }
+        return false;
+    }
+
+    /** Einträge für die Liste: Werte und – bei Paket-/Klassennamen – gemeinsame Präfixe, hierarchisch sortiert. */
+    private List<String> entries() {
+        if (entries != null && entriesFor == values) return entries;
+        entriesFor = values;
+        prefixCount.clear();
+        depth.clear();
+        int dotted = 0;
+        for (String v : values) if (v.indexOf('.') > 0 && v.indexOf(' ') < 0) dotted++;
+        if (values.size() < 2 || dotted * 2 < values.size()) return entries = values;
+        Map<String, Integer> counts = new java.util.HashMap<>();
+        for (String v : values) {
+            if (v.indexOf(' ') >= 0) continue;
+            for (int i = v.indexOf('.'); i > 0; i = v.indexOf('.', i + 1)) counts.merge(v.substring(0, i), 1, Integer::sum);
+        }
+        for (Map.Entry<String, Integer> e : counts.entrySet())
+            if (e.getValue() >= 2) prefixCount.put(e.getKey() + PREFIX_SUFFIX, e.getValue());
+        if (prefixCount.isEmpty()) return entries = values;
+        List<String> l = new ArrayList<>(values.size() + prefixCount.size());
+        l.addAll(values);
+        l.addAll(prefixCount.keySet());
+        // Präfix "a.b.*" sortiert als "a.b." direkt vor seinen Kindern
+        l.sort(java.util.Comparator.comparing((String s) -> isPrefix(s) ? base(s) + "." : s, String.CASE_INSENSITIVE_ORDER));
+        for (String s : l) {
+            String t = isPrefix(s) ? base(s) : s;
+            int d = 0;
+            for (int i = t.indexOf('.'); i > 0; i = t.indexOf('.', i + 1))
+                if (prefixCount.containsKey(t.substring(0, i) + PREFIX_SUFFIX)) d++;
+            depth.put(s, d);
+        }
+        return entries = l;
+    }
+
     // ------------------------------------------------------------------ Popup
 
     private void showPopup() {
@@ -164,11 +234,12 @@ public final class ChoiceFilterButton extends JButton {
             String q = search.getText().trim().toLowerCase(Locale.ROOT);
             listModel.clear();
             List<String> match = new ArrayList<>();
-            for (String v : values) if (q.isEmpty() || label(v).toLowerCase(Locale.ROOT).contains(q)) match.add(v);
+            for (String v : entries()) if (q.isEmpty() || label(v).toLowerCase(Locale.ROOT).contains(q)) match.add(v);
             listModel.addAll(match);
             if (!listModel.isEmpty()) list.setSelectedIndex(0);
             if (loading) info.setText("Werte werden noch ermittelt…");
-            else info.setText(match.size() + " von " + values.size() + " Werten"
+            else info.setText(match.size() + " von " + entries().size() + " Einträgen"
+                    + (prefixCount.isEmpty() ? "" : " (" + prefixCount.size() + " Pakete)")
                     + (overflow ? " (Liste gekürzt: zu viele verschiedene Werte)" : ""));
         };
         Runnable toggleCurrent = () -> {
@@ -257,10 +328,16 @@ public final class ChoiceFilterButton extends JButton {
         @Override
         public Component getListCellRendererComponent(JList<? extends String> list, String value, int index,
                                                       boolean isSelected, boolean cellHasFocus) {
-            setText(label(value));
-            setSelected(selected.contains(value));
+            boolean prefix = prefixCount.containsKey(value);
+            boolean covered = coveredByPrefix(value);
+            setText(prefix ? value + "   (" + prefixCount.get(value) + ")" : label(value));
+            setFont(list.getFont().deriveFont(prefix ? java.awt.Font.BOLD : java.awt.Font.PLAIN));
+            setBorder(BorderFactory.createEmptyBorder(1, 4 + 14 * depth.getOrDefault(value, 0), 1, 4));
+            setSelected(selected.contains(value) || covered);
+            setToolTipText(prefix ? "Alle " + prefixCount.get(value) + " Werte unterhalb von " + base(value)
+                    : covered ? "Über ein ausgewähltes Paket enthalten" : null);
             setBackground(isSelected ? list.getSelectionBackground() : list.getBackground());
-            setForeground(isSelected ? list.getSelectionForeground() : list.getForeground());
+            setForeground(isSelected ? list.getSelectionForeground() : covered ? java.awt.Color.GRAY : list.getForeground());
             return this;
         }
     }
