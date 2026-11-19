@@ -9,6 +9,19 @@
 #   $raw               die komplette Rohzeile
 #
 # Objekte/Arrays werden in der Zelle als kompaktes JSON angezeigt.
+#
+# Optionale Spalten-Eigenschaften:
+#   visible: false               Spalte ausblenden
+#   formatter: timestamp-local   Zeitstempel in lokale Zeitzone umrechnen (inkl. Sommer-/Winterzeit)
+#   formatter: timestamp-utc     Zeitstempel nach UTC umrechnen
+#   formatter: package-compact   de.example.shop.OrderService -> d.e.s.OrderService
+#   formatter: class-only        de.example.shop.OrderService -> OrderService
+#   type: loglevel               Filter "ab Level" (Log4j, Logback, JUL): WARN zeigt WARN, ERROR, FATAL
+#   choiceFilter: true           Auswahl-Dropdown mit allen vorkommenden Werten in der Filterleiste
+#
+# Reihenfolge, Breite, Sichtbarkeit und Formatter werden vom Viewer automatisch hierher
+# zurückgeschrieben. Dieser Kommentarblock am Dateianfang bleibt dabei erhalten,
+# Kommentare weiter unten nicht.
 
 title: "Meine App-Logs"
 
@@ -19,6 +32,7 @@ columns:
   - name: Level
     path: level
     width: 70
+    type: loglevel
   - name: Logger
     path: logger
     width: 220

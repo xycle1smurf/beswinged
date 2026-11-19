@@ -2,6 +2,7 @@ package jsonlogviewer;
 
 import java.awt.Color;
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import javax.swing.table.AbstractTableModel;
@@ -9,6 +10,8 @@ import javax.swing.table.AbstractTableModel;
 /**
  * Lazy TableModel: Zeilen werden erst gelesen und geparst, wenn die JTable sie anzeigt.
  * Ein LRU-Cache hält die zuletzt sichtbaren Zeilen.
+ *
+ * Model-Spalte 0 ist die Zeilennummer, Model-Spalte k+1 ist Schema-Spalte k.
  */
 public final class LogTableModel extends AbstractTableModel {
 
@@ -19,6 +22,7 @@ public final class LogTableModel extends AbstractTableModel {
 
     private final LineIndex index;
     private final Schema schema;
+    private final Schema.Column[] cols; // aktueller Stand (Sichtbarkeit, Formatter, Breite)
     private int[] filter;      // null = alle Zeilen
     private int filterCount;
     private int rowCount;
@@ -30,12 +34,29 @@ public final class LogTableModel extends AbstractTableModel {
     public LogTableModel(LineIndex index, Schema schema) {
         this.index = index;
         this.schema = schema;
+        this.cols = schema.columns.toArray(new Schema.Column[0]);
         this.rowCount = index == null ? 0 : index.lineCount();
     }
 
     public Schema schema() { return schema; }
     public LineIndex index() { return index; }
     public boolean isFiltered() { return filter != null; }
+
+    /** Anzahl Schema-Spalten (ohne Zeilennummer). */
+    public int schemaColumnCount() { return cols.length; }
+
+    /** Schema-Spalte k (0-basiert, ohne Zeilennummer). */
+    public Schema.Column column(int k) { return cols[k]; }
+
+    /** Ersetzt Schema-Spalte k; bei geändertem Formatter werden die Zellen neu berechnet. */
+    public void setColumn(int k, Schema.Column c) {
+        boolean reformat = c.formatter() != cols[k].formatter();
+        cols[k] = c;
+        if (reformat) {
+            cache.clear();
+            if (rowCount > 0) fireTableRowsUpdated(0, rowCount - 1); // erhält die Auswahl
+        }
+    }
 
     /** Neue indizierte Zeilen übernehmen (vom EDT aus periodisch aufgerufen). */
     public void refreshRowCount() {
@@ -60,26 +81,19 @@ public final class LogTableModel extends AbstractTableModel {
         return filter == null ? viewRow : filter[viewRow];
     }
 
-    /** Datei-Zeile -> View-Zeile, oder -1 falls herausgefiltert. */
-    public int viewRowOf(int line) {
-        if (filter == null) return line < rowCount ? line : -1;
-        int idx = java.util.Arrays.binarySearch(filter, 0, filterCount, line);
-        return idx >= 0 ? idx : -1;
-    }
-
     /** Nächste View-Zeile mit Zeilennummer >= line (für "Gehe zu" im Filter). */
     public int nearestViewRow(int line) {
         if (filter == null) return Math.min(line, rowCount - 1);
-        int idx = java.util.Arrays.binarySearch(filter, 0, filterCount, line);
+        int idx = Arrays.binarySearch(filter, 0, filterCount, line);
         if (idx < 0) idx = -idx - 1;
         return Math.min(idx, filterCount - 1);
     }
 
     @Override public int getRowCount() { return rowCount; }
-    @Override public int getColumnCount() { return schema.columns.size() + 1; }
+    @Override public int getColumnCount() { return cols.length + 1; }
 
     @Override public String getColumnName(int c) {
-        return c == 0 ? "#" : schema.columns.get(c - 1).name();
+        return c == 0 ? "#" : cols[c - 1].name();
     }
 
     @Override public Class<?> getColumnClass(int c) {
@@ -106,31 +120,34 @@ public final class LogTableModel extends AbstractTableModel {
         try {
             text = index.readLine(line);
         } catch (IOException e) {
-            String[] cells = new String[schema.columns.size()];
-            java.util.Arrays.fill(cells, "");
+            String[] cells = new String[cols.length];
+            Arrays.fill(cells, "");
             cells[0] = "Lesefehler: " + e.getMessage();
             return new Row(cells, null, true);
         }
-        return extract(schema, text);
+        return extract(text);
     }
 
-    static Row extract(Schema schema, String text) {
-        int n = schema.columns.size();
+    private Row extract(String text) {
+        int n = cols.length;
         String[] cells = new String[n];
         Object root;
         try {
             root = Json.parse(text);
         } catch (RuntimeException e) {
-            java.util.Arrays.fill(cells, "");
-            for (int k = 0; k < n; k++) if (Schema.RAW.equals(schema.columns.get(k).path())) cells[k] = cell(text);
+            Arrays.fill(cells, "");
+            for (int k = 0; k < n; k++) if (cols[k].isRaw()) cells[k] = cell(text);
             if (n > 0 && cells[0].isEmpty()) cells[0] = cell("⚠ kein JSON: " + text);
             return new Row(cells, null, true);
         }
-        for (int k = 0; k < n; k++) {
-            Schema.Column col = schema.columns.get(k);
-            cells[k] = Schema.RAW.equals(col.path()) ? cell(text) : cell(Json.toDisplay(Json.get(root, col.segments())));
-        }
+        for (int k = 0; k < n; k++) cells[k] = cell(displayValue(cols[k], root, text));
         return new Row(cells, schema.colorFor(root), false);
+    }
+
+    /** Wert einer Spalte, wie er angezeigt (und gefiltert) wird: inkl. Formatter. */
+    static String displayValue(Schema.Column col, Object root, String rawLine) {
+        if (col.isRaw()) return rawLine;
+        return col.formatter().apply(Json.toDisplay(Json.get(root, col.segments())));
     }
 
     /** Zelltext einzeilig und begrenzt halten (Rendering großer Werte ist teuer). */

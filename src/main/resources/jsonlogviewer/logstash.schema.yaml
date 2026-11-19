@@ -1,0 +1,46 @@
+# Schema für Logs im Format von logstash-logback-encoder (LogstashEncoder)
+# Passend zu examples/logstash-sample.jsonl:
+#   java -jar target/beswinged.jar examples/logstash-sample.jsonl --schema examples/logstash.schema.yaml
+#
+# Formatter (formatter: ...): timestamp-local, timestamp-utc, package-compact, class-only.
+# type: loglevel = Filter nach Mindest-Level, choiceFilter: true = Auswahl-Dropdown in der Filterleiste.
+# Änderungen in der Oberfläche (Reihenfolge, Breite, Ein-/Ausblenden, Formatter) werden
+# automatisch in diese Datei geschrieben; nur dieser Kopfkommentar bleibt erhalten.
+
+title: "Logstash JSON Log"
+
+columns:
+  - name: Zeit
+    path: "@timestamp"
+    width: 200
+  - name: Level
+    path: level
+    type: loglevel
+    width: 60
+  - name: Logger
+    path: logger_name
+    width: 300
+    choiceFilter: true
+  - name: Thread
+    path: thread_name
+    width: 150
+  - name: Nachricht
+    path: message
+    width: 520
+  - name: User
+    path: userId
+    width: 70
+  - name: Trace-ID
+    path: traceId
+    width: 230
+  - name: Stacktrace
+    path: stack_trace
+    width: 400
+
+rowColors:
+  path: level
+  values:
+    ERROR: "#FFD6D6"
+    WARN: "#FFF2C2"
+    DEBUG: "#EEEEEE"
+    TRACE: "#F6F6F6"

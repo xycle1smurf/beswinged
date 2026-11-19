@@ -5,7 +5,9 @@ import java.awt.Color;
 import java.awt.Component;
 import java.awt.Dimension;
 import java.awt.EventQueue;
+import java.awt.FlowLayout;
 import java.awt.Font;
+import java.awt.Point;
 import java.awt.Toolkit;
 import java.awt.datatransfer.DataFlavor;
 import java.awt.datatransfer.StringSelection;
@@ -13,19 +15,27 @@ import java.awt.dnd.DnDConstants;
 import java.awt.dnd.DropTarget;
 import java.awt.dnd.DropTargetDropEvent;
 import java.awt.event.ActionEvent;
-import java.awt.event.InputEvent;
+import java.awt.event.ActionListener;
 import java.awt.event.KeyEvent;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.io.File;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Set;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
 import java.util.prefs.Preferences;
@@ -34,8 +44,10 @@ import java.util.regex.PatternSyntaxException;
 import javax.swing.AbstractAction;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
+import javax.swing.ButtonGroup;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
+import javax.swing.JCheckBoxMenuItem;
 import javax.swing.JComboBox;
 import javax.swing.JFileChooser;
 import javax.swing.JFrame;
@@ -47,6 +59,7 @@ import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JPopupMenu;
 import javax.swing.JProgressBar;
+import javax.swing.JRadioButtonMenuItem;
 import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
 import javax.swing.JTable;
@@ -58,9 +71,18 @@ import javax.swing.ListSelectionModel;
 import javax.swing.SwingConstants;
 import javax.swing.Timer;
 import javax.swing.UIManager;
+import javax.swing.event.ChangeEvent;
+import javax.swing.event.ListSelectionEvent;
+import javax.swing.event.MenuEvent;
+import javax.swing.event.MenuListener;
+import javax.swing.event.PopupMenuEvent;
+import javax.swing.event.PopupMenuListener;
+import javax.swing.event.TableColumnModelEvent;
+import javax.swing.event.TableColumnModelListener;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.TableColumn;
+import javax.swing.table.TableColumnModel;
 
 /**
  * Swing-Viewer für große JSON-Lines-Logdateien. Nur JDK, keine Fremdbibliotheken.
@@ -70,13 +92,19 @@ import javax.swing.table.TableColumn;
 public final class JsonLogViewer extends JFrame {
 
     private static final int AUTO_SAMPLE = 200;
+    private static final int KIND_SAMPLE = 50;
+
+    /** Art der Werte einer Spalte, bestimmt welche Formatter im Kontextmenü angeboten werden. */
+    private enum Kind { TIMESTAMP, CLASS, OTHER }
 
     private final Preferences prefs = Preferences.userNodeForPackage(JsonLogViewer.class);
 
     private final JTable table = new JTable();
     private final JTextArea detail = new JTextArea();
+    private final JLabel detailHeader = new JLabel(" ");
     private final JTextField filterField = new JTextField(30);
     private final JComboBox<String> scopeBox = new JComboBox<>();
+    private final List<Integer> scopeColumns = new ArrayList<>(); // Combo-Index-1 -> Schema-Spalte
     private final JCheckBox regexBox = new JCheckBox("Regex");
     private final JCheckBox invertBox = new JCheckBox("Nicht");
     private final JButton filterButton = new JButton("Filtern");
@@ -85,11 +113,27 @@ public final class JsonLogViewer extends JFrame {
     private final JLabel filterStatus = new JLabel(" ");
     private final JProgressBar progress = new JProgressBar(0, 1000);
 
+    // Auswahlfilter / Loglevel-Filter (Schema-Spalte -> Widget)
+    private static final int DISTINCT_LIMIT = 10_000;
+    private final JPanel choiceBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 2));
+    private Map<Integer, ChoiceFilterButton> choiceButtons = new LinkedHashMap<>();
+    private Map<Integer, JComboBox<String>> levelBoxes = new LinkedHashMap<>();
+    private AtomicBoolean distinctCancel = new AtomicBoolean();
+
     private LineIndex index;
     private Schema configuredSchema;     // null = automatisch erkennen
-    private Path schemaFile;
+    private Path schemaFile;             // Ziel für automatisches Speichern
     private boolean autoSchemaPending;
     private LogTableModel model = new LogTableModel(null, Schema.auto(List.of()));
+
+    // Spaltenzustand der View
+    private TableColumn[] tableColumns = new TableColumn[0]; // Index = Model-Spalte
+    private List<Integer> order = new ArrayList<>();          // Schema-Spalten in Anzeigereihenfolge (inkl. ausgeblendeter)
+    private boolean rebuildingColumns;
+    private final Map<Integer, Kind> kindCache = new HashMap<>();
+    private final Timer saveTimer = new Timer(800, e -> saveSchemaNow());
+    private String lastSavedSnapshot;
+    private String lastDetailKey;
 
     private AtomicBoolean indexCancel = new AtomicBoolean();
     private AtomicBoolean filterCancel = new AtomicBoolean();
@@ -102,10 +146,17 @@ public final class JsonLogViewer extends JFrame {
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
         setSize(1400, 850);
         setLocationByPlatform(true);
+        saveTimer.setRepeats(false);
 
         buildMenu();
-        add(buildToolbar(), BorderLayout.NORTH);
+        JPanel north = new JPanel(new BorderLayout());
+        north.add(buildToolbar(), BorderLayout.NORTH);
+        choiceBar.setBorder(BorderFactory.createEmptyBorder(0, 4, 4, 4));
+        choiceBar.setVisible(false);
+        north.add(choiceBar, BorderLayout.SOUTH);
+        add(north, BorderLayout.NORTH);
 
+        table.setAutoCreateColumnsFromModel(false); // Spalten verwaltet der Viewer selbst
         table.setModel(model);
         table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
         table.setFillsViewportHeight(true);
@@ -118,16 +169,34 @@ public final class JsonLogViewer extends JFrame {
         table.setDefaultRenderer(String.class, renderer);
         table.setDefaultRenderer(Integer.class, renderer);
         table.getSelectionModel().addListSelectionListener(e -> {
-            if (!e.getValueIsAdjusting()) showDetail();
+            if (!e.getValueIsAdjusting()) showDetail(false);
         });
+        table.getColumnModel().addColumnModelListener(new ColumnListener());
         table.setComponentPopupMenu(buildPopup());
+        // Eigenes Menü für die Spaltenköpfe (sonst erbt der Header das Kontextmenü der Tabelle);
+        // der Inhalt wird beim Öffnen passend zur Spalte unter der Maus aufgebaut.
+        JPopupMenu headerPopup = new JPopupMenu();
+        headerPopup.addPopupMenuListener(new PopupMenuListener() {
+            @Override public void popupMenuWillBecomeVisible(PopupMenuEvent e) { fillHeaderPopup(headerPopup); }
+            @Override public void popupMenuWillBecomeInvisible(PopupMenuEvent e) { }
+            @Override public void popupMenuCanceled(PopupMenuEvent e) { }
+        });
+        table.getTableHeader().setComponentPopupMenu(headerPopup);
+        table.getTableHeader().addMouseListener(new MouseAdapter() {
+            @Override public void mousePressed(MouseEvent e) { headerPopupX = e.getX(); }
+        });
+        buildColumns();
 
         detail.setEditable(false);
         detail.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 13));
-        detail.setTabSize(2);
+        detail.setTabSize(4);
+        JPanel detailPanel = new JPanel(new BorderLayout());
+        detailHeader.setBorder(BorderFactory.createEmptyBorder(3, 6, 3, 6));
+        detailPanel.add(detailHeader, BorderLayout.NORTH);
+        detailPanel.add(new JScrollPane(detail), BorderLayout.CENTER);
 
-        JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, new JScrollPane(table), new JScrollPane(detail));
-        split.setResizeWeight(0.75);
+        JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, new JScrollPane(table), detailPanel);
+        split.setResizeWeight(0.7);
         add(split, BorderLayout.CENTER);
 
         JPanel south = new JPanel(new BorderLayout(8, 0));
@@ -158,7 +227,7 @@ public final class JsonLogViewer extends JFrame {
 
         new Timer(200, e -> tick()).start();
         addWindowListener(new WindowAdapter() {
-            @Override public void windowClosed(WindowEvent e) { closeIndex(); System.exit(0); }
+            @Override public void windowClosed(WindowEvent e) { flushSave(); closeIndex(); System.exit(0); }
         });
         updateFilterControls();
         rebuildScopeBox();
@@ -173,18 +242,62 @@ public final class JsonLogViewer extends JFrame {
         file.add(item("Neu laden", KeyEvent.VK_F5, e -> reload()));
         file.addSeparator();
         file.add(item("Schema laden…", KeyEvent.VK_L, e -> chooseSchema()));
-        file.add(item("Schema automatisch erkennen", 0, e -> { configuredSchema = null; schemaFile = null; applySchema(); }));
-        file.add(item("Schema als YAML speichern…", 0, e -> saveSchema()));
+        file.add(item("Schema automatisch erkennen", 0, e -> {
+            flushSave();
+            configuredSchema = null;
+            schemaFile = null;
+            applySchema();
+        }));
+        file.add(item("Schema speichern unter…", KeyEvent.VK_S, e -> saveSchemaAs()));
         file.addSeparator();
         file.add(item("Beenden", 0, e -> dispose()));
+
+        JMenu view = new JMenu("Ansicht");
+        view.addMenuListener(new MenuListener() {
+            @Override public void menuSelected(MenuEvent e) { fillViewMenu(view); }
+            @Override public void menuDeselected(MenuEvent e) { }
+            @Override public void menuCanceled(MenuEvent e) { }
+        });
+
         JMenu nav = new JMenu("Navigation");
         nav.add(item("Gehe zu Zeile…", KeyEvent.VK_G, e -> gotoLine()));
         nav.add(item("Filter fokussieren", KeyEvent.VK_F, e -> filterField.requestFocusInWindow()));
         nav.add(item("Zum Anfang", KeyEvent.VK_HOME, e -> selectRow(0)));
         nav.add(item("Zum Ende", KeyEvent.VK_END, e -> selectRow(model.getRowCount() - 1)));
+        JMenu extras = new JMenu("Extras");
+        extras.add(item("Log-Generator…", 0, e -> showGenerator()));
         bar.add(file);
+        bar.add(view);
         bar.add(nav);
+        bar.add(extras);
         setJMenuBar(bar);
+    }
+
+    private void showGenerator() {
+        flushSave();
+        String current = schemaFile != null ? schemaFile.getFileName().toString()
+                : model.schema().auto ? "automatisch" : model.schema().title;
+        Schema currentSchema = index == null && configuredSchema == null ? null : snapshot();
+        new GeneratorDialog(this, new File(prefs.get("lastDir", System.getProperty("user.dir"))),
+                currentSchema, current, this::openGenerated).setVisible(true);
+    }
+
+    /** Öffnet ein erzeugtes Log mit dem dafür verwendeten Schema. */
+    private void openGenerated(Path log, Schema schema, Path file) {
+        if (file != null) {
+            loadSchema(file);
+        } else if (schema == null) {
+            try (var in = JsonLogViewer.class.getResourceAsStream("logstash.schema.yaml")) {
+                configuredSchema = Schema.fromYaml(new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
+                schemaFile = null;
+            } catch (Exception ex) {
+                configuredSchema = null;
+                schemaFile = null;
+            }
+        } else {
+            configuredSchema = schema; // aktuelles Schema beibehalten (schemaFile bleibt)
+        }
+        openLog(log);
     }
 
     private JMenuItem item(String text, int key, java.awt.event.ActionListener l) {
@@ -202,7 +315,6 @@ public final class JsonLogViewer extends JFrame {
         tb.add(new JLabel("Filter: "));
         filterField.setMaximumSize(new Dimension(500, 28));
         filterField.addActionListener(e -> applyFilter());
-        filterField.setToolTipText("Enter = filtern. Ohne Regex: Teilstring, Groß-/Kleinschreibung egal");
         tb.add(filterField);
         tb.addSeparator();
         tb.add(new JLabel("in "));
@@ -214,7 +326,7 @@ public final class JsonLogViewer extends JFrame {
         tb.add(invertBox);
         tb.addSeparator();
         filterButton.addActionListener(e -> applyFilter());
-        clearButton.addActionListener(e -> clearFilter());
+        clearButton.addActionListener(e -> resetAllFilters());
         tb.add(filterButton);
         tb.add(clearButton);
         tb.add(Box.createHorizontalGlue());
@@ -236,25 +348,441 @@ public final class JsonLogViewer extends JFrame {
     }
 
     private void rebuildScopeBox() {
+        int keep = scopeBox.getSelectedIndex() > 0 ? scopeColumns.get(scopeBox.getSelectedIndex() - 1) : -1;
         scopeBox.removeAllItems();
+        scopeColumns.clear();
         scopeBox.addItem("ganze Zeile");
-        for (Schema.Column c : model.schema().columns) scopeBox.addItem(c.name());
+        int select = 0;
+        for (int k : order) {
+            scopeColumns.add(k);
+            scopeBox.addItem(model.column(k).name());
+            if (k == keep) select = scopeColumns.size();
+        }
+        scopeBox.setSelectedIndex(select);
     }
 
-    private void applyColumnWidths() {
-        TableColumn first = table.getColumnModel().getColumn(0);
-        first.setPreferredWidth(80);
-        List<Schema.Column> cols = model.schema().columns;
-        for (int k = 0; k < cols.size(); k++)
-            table.getColumnModel().getColumn(k + 1).setPreferredWidth(cols.get(k).width());
-        int h = table.getFontMetrics(table.getFont()).getHeight() + 4;
-        table.setRowHeight(h);
+    // ================================================================== Spalten
+
+    /** Erzeugt die TableColumns für das aktuelle Modell. */
+    private void buildColumns() {
+        int n = model.schemaColumnCount();
+        tableColumns = new TableColumn[n + 1];
+        tableColumns[0] = new TableColumn(0, 80);
+        tableColumns[0].setHeaderValue("#");
+        order = new ArrayList<>();
+        for (int k = 0; k < n; k++) {
+            Schema.Column c = model.column(k);
+            TableColumn tc = new TableColumn(k + 1, c.width());
+            tc.setHeaderValue(c.name());
+            tableColumns[k + 1] = tc;
+            order.add(k);
+        }
+        kindCache.clear();
+        rebuildColumnModel();
+        table.setRowHeight(table.getFontMetrics(table.getFont()).getHeight() + 4);
     }
 
-    // ================================================================== Datei / Schema
+    /** Baut das ColumnModel aus {@link #order} und der Sichtbarkeit neu auf. */
+    private void rebuildColumnModel() {
+        rebuildingColumns = true;
+        try {
+            TableColumnModel cm = table.getColumnModel();
+            while (cm.getColumnCount() > 0) cm.removeColumn(cm.getColumn(0));
+            cm.addColumn(tableColumns[0]);
+            for (int k : order) if (model.column(k).visible()) cm.addColumn(tableColumns[k + 1]);
+        } finally {
+            rebuildingColumns = false;
+        }
+        table.getTableHeader().repaint();
+    }
+
+    /** Übernimmt die per Drag & Drop geänderte Reihenfolge; ausgeblendete Spalten behalten ihren Platz. */
+    private void syncOrderFromView() {
+        TableColumnModel cm = table.getColumnModel();
+        List<Integer> visibleInView = new ArrayList<>();
+        for (int v = 0; v < cm.getColumnCount(); v++) {
+            int mi = cm.getColumn(v).getModelIndex();
+            if (mi > 0) visibleInView.add(mi - 1);
+        }
+        Iterator<Integer> it = visibleInView.iterator();
+        List<Integer> newOrder = new ArrayList<>(order.size());
+        for (int k : order) newOrder.add(model.column(k).visible() && it.hasNext() ? it.next() : k);
+        order = newOrder;
+    }
+
+    private int visibleCount() {
+        int n = 0;
+        for (int k = 0; k < model.schemaColumnCount(); k++) if (model.column(k).visible()) n++;
+        return n;
+    }
+
+    private void setColumnVisible(int k, boolean visible) {
+        if (model.column(k).visible() == visible) return;
+        if (!visible && visibleCount() <= 1) { Toolkit.getDefaultToolkit().beep(); return; }
+        model.setColumn(k, model.column(k).withVisible(visible));
+        rebuildColumnModel();
+        scheduleSave();
+    }
+
+    private void showAllColumns() {
+        for (int k = 0; k < model.schemaColumnCount(); k++)
+            if (!model.column(k).visible()) model.setColumn(k, model.column(k).withVisible(true));
+        rebuildColumnModel();
+        scheduleSave();
+    }
+
+    private void setFormatter(int k, CellFormatter f) {
+        if (model.column(k).formatter() == f) return;
+        model.setColumn(k, model.column(k).withFormatter(f));
+        scheduleSave();
+        showDetail(true);
+        ChoiceFilterButton b = choiceButtons.get(k);
+        if (b != null) { // Werte hängen vom Formatter ab
+            b.clearSelection();
+            b.setLoading();
+            startDistinctScan();
+        }
+    }
+
+    private void setChoiceFilter(int k, boolean on) {
+        model.setColumn(k, model.column(k).withChoiceFilter(on));
+        boolean hadSelection = !on && choiceButtons.containsKey(k) && !choiceButtons.get(k).selection().isEmpty();
+        rebuildChoiceBar();
+        scheduleSave();
+        if (hadSelection) applyFilter();
+    }
+
+    private void setLogLevelType(int k, boolean on) {
+        model.setColumn(k, model.column(k).withLogLevel(on));
+        boolean hadLevel = !on && levelBoxes.containsKey(k) && levelBoxes.get(k).getSelectedIndex() > 0;
+        rebuildChoiceBar();
+        scheduleSave();
+        if (hadLevel) applyFilter();
+    }
+
+    // ---------------------------------------------------- Auswahl- und Level-Filter
+
+    /** Baut die zweite Filterzeile; bestehende Auswahlen bleiben erhalten. */
+    private void rebuildChoiceBar() {
+        Map<Integer, ChoiceFilterButton> oldChoices = choiceButtons;
+        Map<Integer, JComboBox<String>> oldLevels = levelBoxes;
+        choiceButtons = new LinkedHashMap<>();
+        levelBoxes = new LinkedHashMap<>();
+        choiceBar.removeAll();
+        for (int k : order) {
+            Schema.Column c = model.column(k);
+            if (c.logLevel()) {
+                JComboBox<String> box = oldLevels.get(k);
+                if (box == null) {
+                    box = new JComboBox<>();
+                    box.addItem("alle");
+                    for (int r = 1; r <= LogLevels.count(); r++) box.addItem("≥ " + LogLevels.label(r));
+                    box.setPrototypeDisplayValue("≥ FATAL / CRITICAL   ");
+                    box.setToolTipText("Zeigt das gewählte Level und alle schwerwiegenderen");
+                    box.addActionListener(e -> applyFilter());
+                }
+                choiceBar.add(new JLabel(c.name() + ":"));
+                choiceBar.add(box);
+                levelBoxes.put(k, box);
+            }
+            if (c.choiceFilter()) {
+                ChoiceFilterButton b = oldChoices.get(k);
+                if (b == null) b = new ChoiceFilterButton(c.name(), this::applyFilter);
+                choiceBar.add(b);
+                choiceButtons.put(k, b);
+            }
+        }
+        boolean show = !choiceButtons.isEmpty() || !levelBoxes.isEmpty();
+        if (show) {
+            JButton reset = new JButton("Auswahl zurücksetzen");
+            reset.addActionListener(e -> {
+                resetChoiceWidgets();
+                applyFilter();
+            });
+            choiceBar.add(reset);
+        }
+        choiceBar.setVisible(show);
+        choiceBar.revalidate();
+        choiceBar.repaint();
+        updateFilterControls();
+        startDistinctScan();
+    }
+
+    private void resetChoiceWidgets() {
+        for (ChoiceFilterButton b : choiceButtons.values()) b.clearSelection();
+        for (JComboBox<String> box : levelBoxes.values()) {
+            ActionListener[] ls = box.getActionListeners();
+            for (ActionListener l : ls) box.removeActionListener(l);
+            box.setSelectedIndex(0);
+            for (ActionListener l : ls) box.addActionListener(l);
+        }
+    }
+
+    /** Ermittelt im Hintergrund die DISTINCT-Werte aller Auswahlfilter, die noch keine Werte haben. */
+    private void startDistinctScan() {
+        if (index == null || !index.isComplete()) return; // wird nach dem Indizieren erneut aufgerufen
+        List<Integer> ks = new ArrayList<>();
+        for (Map.Entry<Integer, ChoiceFilterButton> e : choiceButtons.entrySet())
+            if (e.getValue().isLoading()) ks.add(e.getKey());
+        if (ks.isEmpty()) return;
+        distinctCancel.set(true);
+        AtomicBoolean cancel = new AtomicBoolean();
+        distinctCancel = cancel;
+        LineIndex idx = index;
+        LogTableModel m = model;
+        Schema.Column[] cols = new Schema.Column[ks.size()];
+        for (int i = 0; i < cols.length; i++) cols[i] = m.column(ks.get(i));
+
+        Thread t = new Thread(() -> {
+            List<Set<String>> sets = new ArrayList<>();
+            for (int i = 0; i < cols.length; i++) sets.add(new HashSet<>());
+            boolean[] overflow = new boolean[cols.length];
+            try {
+                idx.scan(0, idx.lineCount(), (line, s) -> {
+                    if ((line & 0xFFF) == 0 && cancel.get()) return false;
+                    Object root;
+                    try { root = Json.parse(s); } catch (RuntimeException ex) { return true; }
+                    for (int i = 0; i < cols.length; i++) {
+                        String v = LogTableModel.displayValue(cols[i], root, s);
+                        if (sets.get(i).size() < DISTINCT_LIMIT) sets.get(i).add(v);
+                        else if (!sets.get(i).contains(v)) overflow[i] = true;
+                    }
+                    return true;
+                });
+            } catch (IOException ex) {
+                return;
+            }
+            if (cancel.get()) return;
+            EventQueue.invokeLater(() -> {
+                if (cancel.get() || model != m) return;
+                for (int i = 0; i < cols.length; i++) {
+                    ChoiceFilterButton b = choiceButtons.get(ks.get(i));
+                    if (b == null) continue;
+                    List<String> vals = new ArrayList<>(sets.get(i));
+                    Comparator<String> cmp = String.CASE_INSENSITIVE_ORDER;
+                    if (cols[i].logLevel()) cmp = Comparator.comparingInt(LogLevels::rank).thenComparing(cmp);
+                    vals.sort(cmp);
+                    b.setValues(vals, overflow[i]);
+                }
+            });
+        }, "distinct");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private final class ColumnListener implements TableColumnModelListener {
+        @Override public void columnMoved(TableColumnModelEvent e) {
+            if (!rebuildingColumns && e.getFromIndex() != e.getToIndex()) {
+                syncOrderFromView();
+                scheduleSave();
+            }
+        }
+        @Override public void columnMarginChanged(ChangeEvent e) { if (!rebuildingColumns) scheduleSave(); }
+        @Override public void columnSelectionChanged(ListSelectionEvent e) {
+            if (!e.getValueIsAdjusting()) showDetail(false);
+        }
+        @Override public void columnAdded(TableColumnModelEvent e) { }
+        @Override public void columnRemoved(TableColumnModelEvent e) { }
+    }
+
+    /** Ermittelt anhand der ersten Zeilen, ob eine Spalte Zeitstempel oder Klassennamen enthält. */
+    private Kind kind(int k) {
+        CellFormatter f = model.column(k).formatter();
+        if (f.isTimestamp()) return Kind.TIMESTAMP;
+        if (f.isPackage()) return Kind.CLASS;
+        Kind cached = kindCache.get(k);
+        if (cached != null) return cached;
+        if (index == null || index.lineCount() == 0 || model.column(k).isRaw()) return Kind.OTHER;
+        int n = Math.min(KIND_SAMPLE, index.lineCount());
+        int nonEmpty = 0, ts = 0, cls = 0;
+        for (int i = 0; i < n; i++) {
+            try {
+                Object v = Json.get(Json.parse(index.readLine(i)), model.column(k).segments());
+                if (v == null) continue;
+                nonEmpty++;
+                if (v instanceof String s) {
+                    if (CellFormatter.parseInstant(s) != null) ts++;
+                    else if (CellFormatter.isClassName(s)) cls++;
+                }
+            } catch (IOException | RuntimeException ignored) {
+                // Zeile überspringen
+            }
+        }
+        Kind kind = nonEmpty == 0 ? Kind.OTHER
+                : ts == nonEmpty ? Kind.TIMESTAMP
+                : cls * 10 >= nonEmpty * 8 ? Kind.CLASS
+                : Kind.OTHER;
+        if (n == KIND_SAMPLE || index.isComplete()) kindCache.put(k, kind);
+        return kind;
+    }
+
+    private List<Integer> columnsOfKind(Kind kind) {
+        List<Integer> l = new ArrayList<>();
+        for (int k : order) if (kind(k) == kind) l.add(k);
+        return l;
+    }
+
+    // ---------------------------------------------------------------- Menüs
+
+    private void fillViewMenu(JMenu view) {
+        view.removeAll();
+        for (JMenuItem mi : columnToggles()) view.add(mi);
+        view.addSeparator();
+        JMenuItem all = new JMenuItem("Alle Spalten einblenden");
+        all.addActionListener(e -> showAllColumns());
+        view.add(all);
+        view.addSeparator();
+        List<Integer> ts = columnsOfKind(Kind.TIMESTAMP);
+        JMenu tz = timezoneMenu(ts);
+        if (ts.isEmpty()) {
+            tz.setEnabled(false);
+            tz.setToolTipText("Keine Spalte mit Zeitstempeln erkannt");
+        }
+        view.add(tz);
+    }
+
+    private List<JMenuItem> columnToggles() {
+        List<JMenuItem> items = new ArrayList<>();
+        for (int k : order) {
+            Schema.Column c = model.column(k);
+            JCheckBoxMenuItem cb = new JCheckBoxMenuItem(c.name(), c.visible());
+            cb.addActionListener(e -> setColumnVisible(k, cb.isSelected()));
+            items.add(cb);
+        }
+        return items;
+    }
+
+    /** Untermenü "Zeitzone" für die angegebenen Spalten. */
+    private JMenu timezoneMenu(List<Integer> ks) {
+        JMenu tz = new JMenu("Zeitzone");
+        CellFormatter current = ks.isEmpty() ? CellFormatter.NONE : model.column(ks.get(0)).formatter();
+        ButtonGroup g = new ButtonGroup();
+        tz.add(radio(g, "Original (wie in der Datei)", current == CellFormatter.NONE, () -> ks.forEach(k -> setFormatter(k, CellFormatter.NONE))));
+        tz.add(radio(g, "UTC", current == CellFormatter.TIMESTAMP_UTC, () -> ks.forEach(k -> setFormatter(k, CellFormatter.TIMESTAMP_UTC))));
+        tz.add(radio(g, "Lokale Zeitzone (" + ZoneId.systemDefault().getId() + ")", current == CellFormatter.TIMESTAMP_LOCAL,
+                () -> ks.forEach(k -> setFormatter(k, CellFormatter.TIMESTAMP_LOCAL))));
+        return tz;
+    }
+
+    private static JRadioButtonMenuItem radio(ButtonGroup g, String text, boolean selected, Runnable action) {
+        JRadioButtonMenuItem r = new JRadioButtonMenuItem(text, selected);
+        g.add(r);
+        r.addActionListener(e -> action.run());
+        return r;
+    }
+
+    private int headerPopupX = -1;
+
+    private void fillHeaderPopup(JPopupMenu pm) {
+        pm.removeAll();
+        Point mouse = table.getTableHeader().getMousePosition();
+        int x = mouse != null ? mouse.x : headerPopupX;
+        int v = x < 0 ? -1 : table.getTableHeader().columnAtPoint(new Point(x, 1));
+        int mi = v < 0 ? 0 : table.convertColumnIndexToModel(v);
+        if (mi > 0) {
+            int k = mi - 1;
+            JMenuItem hide = new JMenuItem("Ausblenden");
+            hide.setEnabled(visibleCount() > 1);
+            hide.addActionListener(ev -> setColumnVisible(k, false));
+            pm.add(hide);
+            Kind kind = kind(k);
+            if (kind == Kind.TIMESTAMP) {
+                pm.addSeparator();
+                pm.add(timezoneMenu(List.of(k)));
+            } else if (kind == Kind.CLASS) {
+                pm.addSeparator();
+                CellFormatter f = model.column(k).formatter();
+                ButtonGroup g = new ButtonGroup();
+                pm.add(radio(g, "Package original", f == CellFormatter.NONE, () -> setFormatter(k, CellFormatter.NONE)));
+                pm.add(radio(g, "Package compact", f == CellFormatter.PACKAGE_COMPACT, () -> setFormatter(k, CellFormatter.PACKAGE_COMPACT)));
+                pm.add(radio(g, "Class only", f == CellFormatter.CLASS_ONLY, () -> setFormatter(k, CellFormatter.CLASS_ONLY)));
+            }
+            pm.addSeparator();
+            Schema.Column c = model.column(k);
+            JCheckBoxMenuItem choice = new JCheckBoxMenuItem("Auswahlfilter", c.choiceFilter());
+            choice.setToolTipText("Dropdown mit allen vorkommenden Werten in der Filterleiste");
+            choice.addActionListener(ev -> setChoiceFilter(k, choice.isSelected()));
+            pm.add(choice);
+            JCheckBoxMenuItem level = new JCheckBoxMenuItem("Spaltentyp Loglevel", c.logLevel());
+            level.setToolTipText("Filter nach Mindest-Level (Log4j, Logback, JUL)");
+            level.addActionListener(ev -> setLogLevelType(k, level.isSelected()));
+            pm.add(level);
+            pm.addSeparator();
+        }
+        JMenu cols = new JMenu("Spalten");
+        for (JMenuItem m : columnToggles()) cols.add(m);
+        cols.addSeparator();
+        JMenuItem all = new JMenuItem("Alle einblenden");
+        all.addActionListener(ev -> showAllColumns());
+        cols.add(all);
+        pm.add(cols);
+    }
+
+    // ================================================================== Schema speichern
+
+    /** Aktueller Zustand (Reihenfolge, Breite, Sichtbarkeit, Formatter) als Schema. */
+    private Schema snapshot() {
+        List<Schema.Column> cols = new ArrayList<>();
+        for (int k : order) {
+            Schema.Column c = model.column(k);
+            int w = tableColumns[k + 1].getWidth();
+            cols.add(w > 0 ? c.withWidth(w) : c);
+        }
+        return model.schema().withColumns(cols);
+    }
+
+    private void scheduleSave() {
+        saveTimer.restart();
+    }
+
+    private void flushSave() {
+        if (saveTimer.isRunning()) {
+            saveTimer.stop();
+            saveSchemaNow();
+        }
+    }
+
+    private void saveSchemaNow() {
+        Schema s = snapshot();
+        String text = s.toYaml();
+        if (text.equals(lastSavedSnapshot)) return;
+        rebuildScopeBox();
+        if (schemaFile == null) return; // automatisches Schema: nur im Speicher
+        try {
+            s.save(schemaFile);
+            lastSavedSnapshot = text;
+            configuredSchema = s;
+        } catch (IOException ex) {
+            error("Schema konnte nicht gespeichert werden: " + schemaFile, ex);
+        }
+    }
+
+    private void saveSchemaAs() {
+        JFileChooser fc = chooser();
+        fc.setFileFilter(new FileNameExtensionFilter("Schema (YAML, Properties)", "yaml", "yml", "properties"));
+        fc.setSelectedFile(schemaFile != null ? schemaFile.toFile() : new File(fc.getCurrentDirectory(), "schema.yaml"));
+        if (fc.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return;
+        Path target = fc.getSelectedFile().toPath();
+        if (!isSchemaFile(target)) target = target.resolveSibling(target.getFileName() + ".yaml");
+        try {
+            Schema s = snapshot();
+            s.save(target);
+            schemaFile = target;
+            configuredSchema = Schema.load(target);
+            lastSavedSnapshot = s.toYaml();
+            tick();
+        } catch (Exception ex) {
+            error("Speichern fehlgeschlagen", ex);
+        }
+    }
+
+    // ================================================================== Datei / Schema laden
 
     private void chooseLog() {
         JFileChooser fc = chooser();
+        fc.addChoosableFileFilter(new FileNameExtensionFilter("JSON (*.json, *.jsonl)", "json", "jsonl"));
+        fc.addChoosableFileFilter(new FileNameExtensionFilter("Log (*.log)", "log"));
+        fc.setFileFilter(fc.getAcceptAllFileFilter());
         if (fc.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
             prefs.put("lastDir", fc.getCurrentDirectory().getAbsolutePath());
             openLog(fc.getSelectedFile().toPath());
@@ -270,18 +798,6 @@ public final class JsonLogViewer extends JFrame {
         }
     }
 
-    private void saveSchema() {
-        JFileChooser fc = chooser();
-        fc.setSelectedFile(new File(fc.getCurrentDirectory(), "schema.yaml"));
-        if (fc.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
-            try {
-                Files.writeString(fc.getSelectedFile().toPath(), model.schema().toYaml(), StandardCharsets.UTF_8);
-            } catch (IOException ex) {
-                error("Speichern fehlgeschlagen", ex);
-            }
-        }
-    }
-
     private JFileChooser chooser() {
         return new JFileChooser(prefs.get("lastDir", System.getProperty("user.dir")));
     }
@@ -292,6 +808,7 @@ public final class JsonLogViewer extends JFrame {
     }
 
     void loadSchema(Path file) {
+        flushSave();
         try {
             configuredSchema = Schema.load(file);
             schemaFile = file;
@@ -302,6 +819,7 @@ public final class JsonLogViewer extends JFrame {
     }
 
     private void reload() {
+        flushSave();
         if (schemaFile != null) {
             try {
                 configuredSchema = Schema.load(schemaFile);
@@ -314,6 +832,7 @@ public final class JsonLogViewer extends JFrame {
     }
 
     void openLog(Path file) {
+        flushSave();
         closeIndex();
         LineIndex idx;
         try {
@@ -338,6 +857,7 @@ public final class JsonLogViewer extends JFrame {
                         indexMillis = (System.nanoTime() - indexStartNanos) / 1_000_000;
                         tick();
                         updateFilterControls();
+                        startDistinctScan();
                     }
                 });
             } catch (IOException ex) {
@@ -374,10 +894,17 @@ public final class JsonLogViewer extends JFrame {
         }
         model = new LogTableModel(index, s);
         table.setModel(model);
-        applyColumnWidths();
+        buildColumns();
+        lastSavedSnapshot = snapshot().toYaml();
         rebuildScopeBox();
+        distinctCancel.set(true);
+        choiceButtons = new LinkedHashMap<>(); // neues Modell: Auswahlen verwerfen
+        levelBoxes = new LinkedHashMap<>();
+        rebuildChoiceBar();
         filterStatus.setText(" ");
+        lastDetailKey = null;
         detail.setText("");
+        detailHeader.setText(" ");
         String name = index == null ? "" : " — " + index.path().getFileName();
         setTitle(s.title + name);
         updateFilterControls();
@@ -415,7 +942,8 @@ public final class JsonLogViewer extends JFrame {
             sb.append("  —  indiziert in ").append(String.format("%.1f s", indexMillis / 1000.0));
         }
         if (schemaFile != null) sb.append("  —  Schema: ").append(schemaFile.getFileName());
-        else sb.append("  —  Schema: automatisch");
+        else if (configuredSchema != null) sb.append("  —  Schema: ").append(configuredSchema.title).append(" (nicht gespeichert)");
+        else sb.append("  —  Schema: automatisch (Änderungen werden nicht gespeichert)");
         status.setText(sb.toString());
 
         int fp = filterProgress;
@@ -440,15 +968,50 @@ public final class JsonLogViewer extends JFrame {
         filterField.setEnabled(ok);
         filterField.setToolTipText(ok ? "Enter = filtern. Ohne Regex: Teilstring, Groß-/Kleinschreibung egal"
                                       : "Filter ist nach dem Indizieren verfügbar");
+        for (JComboBox<String> box : levelBoxes.values()) box.setEnabled(ok);
+        for (ChoiceFilterButton b : choiceButtons.values()) b.setEnabled(ok);
     }
 
+    /** Spaltenbedingung aus Auswahlfilter bzw. Loglevel-Filter. */
+    private record ColumnCondition(Schema.Column col, Set<String> allowed, int minRank) {
+        boolean test(Object root, String line) {
+            String v = LogTableModel.displayValue(col, root, line);
+            if (allowed != null && !allowed.contains(v)) return false;
+            return minRank <= 0 || LogLevels.rank(v) >= minRank;
+        }
+    }
+
+    private List<ColumnCondition> columnConditions() {
+        List<ColumnCondition> conds = new ArrayList<>();
+        for (Map.Entry<Integer, ChoiceFilterButton> e : choiceButtons.entrySet()) {
+            Set<String> sel = e.getValue().selection();
+            if (!sel.isEmpty()) conds.add(new ColumnCondition(model.column(e.getKey()), sel, 0));
+        }
+        for (Map.Entry<Integer, JComboBox<String>> e : levelBoxes.entrySet()) {
+            int rank = e.getValue().getSelectedIndex(); // 0 = alle, sonst Rang
+            if (rank > 0) conds.add(new ColumnCondition(model.column(e.getKey()), null, rank));
+        }
+        return conds;
+    }
+
+    /** "Zurücksetzen" in der Filterleiste: Text-, Auswahl- und Level-Filter leeren. */
+    private void resetAllFilters() {
+        filterField.setText("");
+        resetChoiceWidgets();
+        clearFilter();
+    }
+
+    /** Wendet Textfilter, Auswahlfilter und Loglevel-Filter gemeinsam (UND) an. */
     private void applyFilter() {
         if (index == null || !index.isComplete()) return;
         String text = filterField.getText();
-        if (text.isEmpty()) { clearFilter(); return; }
+        List<ColumnCondition> conds = columnConditions();
+        if (text.isEmpty() && conds.isEmpty()) { clearFilter(); return; }
 
-        Predicate<String> matcher;
-        if (regexBox.isSelected()) {
+        Predicate<String> matcher = null;
+        if (text.isEmpty()) {
+            // nur Spaltenbedingungen
+        } else if (regexBox.isSelected()) {
             try {
                 Pattern p = Pattern.compile(text, Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
                 matcher = s -> p.matcher(s).find();
@@ -461,10 +1024,11 @@ public final class JsonLogViewer extends JFrame {
             matcher = s -> containsIgnoreCase(s, needle);
         }
         boolean invert = invertBox.isSelected();
-        int scope = scopeBox.getSelectedIndex() - 1; // -1 = ganze Zeile
-        Schema schema = model.schema();
-        String[] segs = scope >= 0 ? schema.columns.get(scope).segments() : null;
-        boolean rawColumn = scope >= 0 && Schema.RAW.equals(schema.columns.get(scope).path());
+        int sel = scopeBox.getSelectedIndex();
+        // Filter auf eine Spalte vergleicht mit dem angezeigten (formatierten) Wert
+        Schema.Column col = sel > 0 ? model.column(scopeColumns.get(sel - 1)) : null;
+        Predicate<String> textMatcher = matcher;
+        boolean needJson = !conds.isEmpty() || (textMatcher != null && col != null && !col.isRaw());
 
         filterCancel.set(true);
         AtomicBoolean cancel = new AtomicBoolean();
@@ -486,17 +1050,24 @@ public final class JsonLogViewer extends JFrame {
                         if (cancel.get()) return false;
                         filterProgress = total == 0 ? 0 : (int) ((long) line * 1000 / total);
                     }
-                    String target;
-                    if (segs == null || rawColumn) target = s;
-                    else {
-                        try {
-                            target = Json.toDisplay(Json.get(Json.parse(s), segs));
-                        } catch (RuntimeException ex) {
-                            target = null;
-                        }
+                    Object root = null;
+                    boolean parsed = false;
+                    if (needJson) {
+                        try { root = Json.parse(s); parsed = true; } catch (RuntimeException ex) { /* kein JSON */ }
                     }
-                    boolean m = target != null && matcher.test(target);
-                    if (m != invert) {
+                    boolean ok = true;
+                    if (textMatcher != null) {
+                        String target;
+                        if (col == null || col.isRaw()) target = s;
+                        else target = parsed ? LogTableModel.displayValue(col, root, s) : null;
+                        boolean m = target != null && textMatcher.test(target);
+                        ok = m != invert;
+                    }
+                    if (ok && !conds.isEmpty()) {
+                        if (!parsed) ok = false;
+                        else for (ColumnCondition c : conds) if (!c.test(root, s)) { ok = false; break; }
+                    }
+                    if (ok) {
                         if (count[0] == hits[0].length) hits[0] = Arrays.copyOf(hits[0], hits[0].length * 2);
                         hits[0][count[0]++] = line;
                     }
@@ -568,23 +1139,70 @@ public final class JsonLogViewer extends JFrame {
         table.requestFocusInWindow();
     }
 
-    private void showDetail() {
+    /**
+     * Klick auf "#": komplette Zeile als formatiertes JSON.
+     * Klick auf eine andere Zelle: nur deren Wert, mit echten Zeilenumbrüchen und Unicode.
+     */
+    private void showDetail(boolean force) {
         int r = table.getSelectedRow();
-        if (r < 0 || index == null) { detail.setText(""); return; }
+        if (r < 0 || index == null) {
+            lastDetailKey = null;
+            detail.setText("");
+            detailHeader.setText(" ");
+            return;
+        }
+        int lead = table.getColumnModel().getSelectionModel().getLeadSelectionIndex();
+        int mi = lead >= 0 && lead < table.getColumnCount() ? table.convertColumnIndexToModel(lead) : 0;
         int line = model.lineAt(r);
+        String key = line + ":" + mi;
+        if (!force && key.equals(lastDetailKey)) return;
+        lastDetailKey = key;
+
+        String text;
         try {
-            String text = index.readLine(line);
-            String body;
+            text = index.readLine(line);
+        } catch (IOException ex) {
+            detail.setText("Lesefehler: " + ex.getMessage());
+            return;
+        }
+        String body;
+        boolean wrap;
+        if (mi == 0) {
+            detailHeader.setText("Zeile " + (line + 1) + "  —  komplette Zeile");
+            wrap = false;
             try {
                 body = Json.stringify(Json.parse(text), true);
             } catch (RuntimeException ex) {
                 body = "⚠ Kein gültiges JSON: " + ex.getMessage() + "\n\n" + text;
+                wrap = true;
             }
-            detail.setText("// Zeile " + (line + 1) + "\n" + body);
-            detail.setCaretPosition(0);
-        } catch (IOException ex) {
-            detail.setText("Lesefehler: " + ex.getMessage());
+        } else {
+            Schema.Column c = model.column(mi - 1);
+            detailHeader.setText("Zeile " + (line + 1) + "  —  " + c.name()
+                    + (c.name().equals(c.path()) ? "" : "  (" + c.path() + ")"));
+            wrap = true;
+            if (c.isRaw()) body = text;
+            else {
+                try {
+                    Object v = Json.get(Json.parse(text), c.segments());
+                    if (v == null) body = "(kein Wert)";
+                    else if (v instanceof Map || v instanceof List) {
+                        body = Json.stringify(v, true);
+                        wrap = false;
+                    } else {
+                        String raw = v.toString(); // JSON-Escapes (\n, \t, \\uXXXX) sind bereits aufgelöst
+                        String formatted = c.formatter().apply(raw);
+                        body = formatted.equals(raw) ? raw : formatted + "\n\nOriginal: " + raw;
+                    }
+                } catch (RuntimeException ex) {
+                    body = "⚠ Kein gültiges JSON: " + ex.getMessage() + "\n\n" + text;
+                }
+            }
         }
+        detail.setLineWrap(wrap);
+        detail.setWrapStyleWord(true);
+        detail.setText(body);
+        detail.setCaretPosition(0);
     }
 
     private void copyRawLines() {
