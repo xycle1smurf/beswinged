@@ -4,6 +4,22 @@ Java Swing based JSON Log Viewer for the poor without OpenSearch
 Swing-Viewer für große JSON-Lines-Logdateien (ein JSON-Objekt pro Zeile).
 **Nur JDK 21, keine Fremdbibliotheken.** JSON-Parser und YAML-Parser (Teilmenge) sind selbst geschrieben.
 
+## Download
+
+Fertige Pakete gibt es unter [Releases](https://github.com/xycle1smurf/beswinged/releases):
+
+| Datei | Inhalt | Start |
+|---|---|---|
+| `beswinged-<Version>-windows-x64.zip` | Ordner mit eigener Java-Laufzeit, keine Installation nötig | entpacken, `beswingedeswinged.exe` |
+| `beswinged-<Version>-linux-x64.tar.gz` | dito | entpacken, `beswinged/bin/beswinged` |
+| `beswinged-<Version>-macos-aarch64.tar.gz` | `beswinged.app` (Apple Silicon) | entpacken, öffnen |
+| `beswinged.jar` | nur das Programm, benötigt Java 21+ | `java -jar beswinged.jar` |
+
+Die Pakete sind nicht signiert. Windows zeigt beim ersten Start ggf. eine SmartScreen-Warnung
+(*Weitere Informationen → Trotzdem ausführen*). Unter macOS hilft
+`xattr -dr com.apple.quarantine beswinged.app`. Log- und Schema-Datei lassen sich wie bei der Jar
+als Argumente übergeben oder per Drag & Drop öffnen. Die Laufzeit darf bis zu 50 % des Arbeitsspeichers nutzen.
+
 ## Bauen & Starten
 
 Mit Maven (Standard-Layout, Quellen unter `src/main/java`):
@@ -124,6 +140,21 @@ Alles Benutzerbezogene liegt in `~/.beswinged/` (unter Windows `%USERPROFILE%\.b
 - `filters/`: gespeicherte Filter, je Datei ein Filter
 
 Mit `-Dbeswinged.home=<Ordner>` lässt sich ein anderes Verzeichnis verwenden.
+
+## Pakete selbst bauen
+
+`./dist.sh [Version]` (unter Windows in Git Bash) erzeugt mit `jlink` und `jpackage` aus dem JDK ein Paket
+für das aktuelle Betriebssystem in `target/dist/`. Die Laufzeit enthält nur `java.base` und `java.desktop`
+(ca. 50 MB entpackt, 33 MB als ZIP). GraalVM oder eine Oracle-Lizenz werden nicht gebraucht; ein OpenJDK-Build
+wie Eclipse Temurin genügt.
+
+Ein Tag `v*` startet den Workflow [release.yml](.github/workflows/release.yml), der auf Windows, Linux und macOS
+baut und ein GitHub Release mit allen Paketen und der Jar anlegt:
+
+```bat
+git tag v1.0.0
+git push origin v1.0.0
+```
 
 ## Grenzen
 

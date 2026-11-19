@@ -1,0 +1,63 @@
+# Baut bei einem Tag v* die Jar und je Betriebssystem ein Programm mit eigener Java-Laufzeit
+# und legt damit ein GitHub Release an.
+#   git tag v1.0.0 && git push origin v1.0.0
+# Über "Run workflow" (manuell) wird nur gebaut; die Dateien liegen dann als Artefakte am Lauf.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Jar bauen
+        run: mvn -B -q package
+      - name: Programm mit Laufzeit bauen
+        shell: bash
+        run: ./dist.sh "${{ github.ref_type == 'tag' && github.ref_name || '0.0.0' }}"
+      - name: Jar beilegen
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: cp target/beswinged.jar target/dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.os }}
+          path: target/dist/*
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Release anlegen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l dist
+          gh release create "${{ github.ref_name }}" dist/* \
+            --repo "${{ github.repository }}" \
+            --title "beswinged ${{ github.ref_name }}" \
+            --generate-notes
