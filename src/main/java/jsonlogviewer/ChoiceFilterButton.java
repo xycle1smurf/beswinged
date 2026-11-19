@@ -91,6 +91,13 @@ public final class ChoiceFilterButton extends JButton {
     /** Ausgewählte Werte; leer = alle. */
     public Set<String> selection() { return Set.copyOf(selected); }
 
+    /** Auswahl setzen (gespeicherter Filter); leer = alle. */
+    public void setSelection(java.util.Collection<String> values) {
+        selected.clear();
+        selected.addAll(values);
+        updateText();
+    }
+
     public void clearSelection() {
         selected.clear();
         updateText();

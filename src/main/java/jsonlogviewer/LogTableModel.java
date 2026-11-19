@@ -15,7 +15,8 @@ import javax.swing.table.AbstractTableModel;
  */
 public final class LogTableModel extends AbstractTableModel {
 
-    public record Row(String[] cells, Color background, boolean invalid) {}
+    /** @param levelRank Rang des Loglevels der Zeile ({@link LogLevels}), 0 = unbekannt */
+    public record Row(String[] cells, Color background, boolean invalid, int levelRank) {}
 
     private static final int CACHE_SIZE = 20_000;
     private static final int MAX_CELL_CHARS = 2_000;
@@ -26,6 +27,7 @@ public final class LogTableModel extends AbstractTableModel {
     private int[] filter;      // null = alle Zeilen
     private int filterCount;
     private int rowCount;
+    private int levelColumn; // Schema-Spalte mit dem Loglevel, -1 = keine
 
     private final Map<Integer, Row> cache = new LinkedHashMap<>(1024, 0.75f, true) {
         @Override protected boolean removeEldestEntry(Map.Entry<Integer, Row> e) { return size() > CACHE_SIZE; }
@@ -36,6 +38,17 @@ public final class LogTableModel extends AbstractTableModel {
         this.schema = schema;
         this.cols = schema.columns.toArray(new Schema.Column[0]);
         this.rowCount = index == null ? 0 : index.lineCount();
+        this.levelColumn = findLevelColumn(cols);
+    }
+
+    /** Spalte vom Typ Loglevel, sonst eine Spalte mit "level" im Pfad. */
+    private static int findLevelColumn(Schema.Column[] cols) {
+        for (int k = 0; k < cols.length; k++) if (cols[k].logLevel()) return k;
+        for (int k = 0; k < cols.length; k++) {
+            String p = cols[k].path().toLowerCase(java.util.Locale.ROOT);
+            if (!cols[k].isRaw() && (p.equals("level") || p.endsWith(".level") || p.endsWith("loglevel") || p.equals("severity"))) return k;
+        }
+        return -1;
     }
 
     public Schema schema() { return schema; }
@@ -52,6 +65,8 @@ public final class LogTableModel extends AbstractTableModel {
     public void setColumn(int k, Schema.Column c) {
         boolean reformat = c.formatter() != cols[k].formatter();
         cols[k] = c;
+        int lc = findLevelColumn(cols);
+        if (lc != levelColumn) { levelColumn = lc; reformat = true; }
         if (reformat) {
             cache.clear();
             if (rowCount > 0) fireTableRowsUpdated(0, rowCount - 1); // erhält die Auswahl
@@ -148,7 +163,7 @@ public final class LogTableModel extends AbstractTableModel {
             String[] cells = new String[cols.length];
             Arrays.fill(cells, "");
             cells[0] = "Lesefehler: " + e.getMessage();
-            return new Row(cells, null, true);
+            return new Row(cells, null, true, 0);
         }
         return extract(text);
     }
@@ -163,10 +178,11 @@ public final class LogTableModel extends AbstractTableModel {
             Arrays.fill(cells, "");
             for (int k = 0; k < n; k++) if (cols[k].isRaw()) cells[k] = cell(text);
             if (n > 0 && cells[0].isEmpty()) cells[0] = cell("⚠ kein JSON: " + text);
-            return new Row(cells, null, true);
+            return new Row(cells, null, true, 0);
         }
         for (int k = 0; k < n; k++) cells[k] = cell(displayValue(cols[k], root, text));
-        return new Row(cells, schema.colorFor(root), false);
+        int rank = levelColumn >= 0 ? LogLevels.rank(displayValue(cols[levelColumn], root, text)) : 0;
+        return new Row(cells, schema.colorFor(root), false, rank);
     }
 
     /** Wert einer Spalte, wie er angezeigt (und gefiltert) wird: inkl. Formatter. */

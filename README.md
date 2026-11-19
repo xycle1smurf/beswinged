@@ -59,7 +59,10 @@ Ohne Schema werden die Spalten automatisch aus den Top-Level-Feldern der ersten 
 | Zeitraum (dritte Filterzeile) | *Von* und *Bis* mit Kalender und Uhrzeit (Symbol rechts im Feld) oder getippt, z.B. `2026-11-19 08:15:30`, `19.11.2026 08:15`, `08:15` (Datum der ausgewÃ¤hlten Zeile) oder `2026-11-19T07:15:00Z`. Ein leeres Feld lÃ¤sst die Seite offen. *ZusÃ¤tzlich davor/danach* zeigt n Zeilen vor bzw. nach dem Zeitraum unabhÃ¤ngig von ihrer Zeit. Wirkt zusammen (UND) mit den anderen Filtern. Ohne Offset gilt die Zeitzone, in der die Zeitstempel-Spalte angezeigt wird (rechts angezeigt). *Gehe zu Von* springt ohne zu filtern. Ãber den Index werden je Grenze nur ca. 40 Zeilen gelesen, auch im Seek-Modus |
 | Rechtsklick â Umliegender Zeitraumâ¦ | Ãbernimmt den Zeitstempel der Zeile. WÃ¤hlbar: Zeitspanne (1 Min bis 12 h), Art (umliegend, nur davor, nur danach) und Zusatzzeilen davor/danach (Standard 10). FÃ¼llt Von/Bis und filtert; die Zeile bleibt ausgewÃ¤hlt |
 | Datei → Tail / Schreiben folgen (Strg+T) | Liest angehängte Zeilen alle 0,5 s nach. Aktive Filter und Auswahlwerte werden fortgeschrieben. Steht die Ansicht am Ende, scrollt sie mit |
-| Rechtsklick in der Tabelle | *Kopiere Zelle*: der Wert wie in der Detailansicht (formatiert, mit echten Zeilenumbrüchen und Unicode); außerdem Rohzeile(n) oder Zellen kopieren |
+| Rechtsklick in der Tabelle | *Kopiere Zelle*: der Wert wie in der Detailansicht (formatiert, mit echten ZeilenumbrÃ¼chen und Unicode). *Kopiere als Markdown*: die ausgewÃ¤hlten Zeilen fÃ¼r Dokumentationen, je Zeile eine Ãberschrift, kurze Werte als Liste, mehrzeilige Werte (Nachricht, Stacktrace, JSON) als Codeblock. AuÃerdem Rohzeile(n) oder Zellen (Tab-getrennt) kopieren |
+| MenÃ¼ Schema | Laden, automatisch erkennen, speichern unter und die **20 zuletzt geÃ¶ffneten Schemas**. Jedes geÃ¶ffnete Schema wird nach `~/.beswinged/schemas/` kopiert; fehlt das Original, Ã¶ffnet der Eintrag die Kopie |
+| MenÃ¼ Filter | *Speichern alsâ¦* legt Textfilter, Auswahl- und Level-Filter sowie Zeitraum unter einem Namen in `~/.beswinged/filters/<Name>.yaml` ab. Darunter die gespeicherten Filter zum Anwenden, unter *LÃ¶schen* zum Entfernen. Spalten werden Ã¼ber ihren Namen zugeordnet |
+| Ansicht â Einstellungenâ¦ | Darstellung ganzer Zeilen je Loglevel: fett, kursiv, Schriftfarbe. Standard: WARN, ERROR und FATAL fett, TRACE dunkelgrau |
 
 Alle Filter wirken gemeinsam (UND). *Zurücksetzen* in der Filterleiste leert alle.
 
@@ -104,6 +107,16 @@ rowColors:
 
 Unterstütztes YAML: Mappings, Listen, Skalare (auch in Anführungszeichen), `[a, b]`, Kommentare.
 Nicht unterstützt: Anker/Aliase, mehrzeilige Strings (`|`, `>`), `{…}`-Flow-Mappings.
+
+## Einstellungen
+
+Alles Benutzerbezogene liegt in `~/.beswinged/` (unter Windows `%USERPROFILE%.beswinged`):
+
+- `settings.yaml`: letztes Verzeichnis, Loglevel-Darstellung, zuletzt geÃ¶ffnete Schemas, Vorgaben fÃ¼r *Umliegender Zeitraum*
+- `schemas/`: Kopien der zuletzt geÃ¶ffneten Schemas (Cache)
+- `filters/`: gespeicherte Filter, je Datei ein Filter
+
+Mit `-Dbeswinged.home=<Ordner>` lÃ¤sst sich ein anderes Verzeichnis verwenden.
 
 ## Grenzen
 

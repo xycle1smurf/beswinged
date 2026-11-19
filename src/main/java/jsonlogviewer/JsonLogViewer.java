@@ -49,7 +49,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
-import java.util.prefs.Preferences;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 import javax.swing.AbstractAction;
@@ -111,7 +110,7 @@ public final class JsonLogViewer extends JFrame {
     /** Art der Werte einer Spalte, bestimmt welche Formatter im Kontextmenü angeboten werden. */
     private enum Kind { TIMESTAMP, CLASS, OTHER }
 
-    private final Preferences prefs = Preferences.userNodeForPackage(JsonLogViewer.class);
+    private String lastFilterName;
 
     private final JTable table = new JTable();
     private final JTextArea detail = new JTextArea();
@@ -291,16 +290,21 @@ public final class JsonLogViewer extends JFrame {
         tailItem.addActionListener(e -> setTail(tailItem.isSelected()));
         file.add(tailItem);
         file.addSeparator();
-        file.add(item("Schema laden…", KeyEvent.VK_L, e -> chooseSchema()));
-        file.add(item("Schema automatisch erkennen", 0, e -> {
-            flushSave();
-            configuredSchema = null;
-            schemaFile = null;
-            applySchema();
-        }));
-        file.add(item("Schema speichern unter…", KeyEvent.VK_S, e -> saveSchemaAs()));
-        file.addSeparator();
         file.add(item("Beenden", 0, e -> dispose()));
+
+        JMenu schemaMenu = new JMenu("Schema");
+        fillSchemaMenu(schemaMenu); // Tastenkürzel sofort verfügbar; Inhalt wird beim Öffnen aktualisiert
+        schemaMenu.addMenuListener(new MenuListener() {
+            @Override public void menuSelected(MenuEvent e) { fillSchemaMenu(schemaMenu); }
+            @Override public void menuDeselected(MenuEvent e) { }
+            @Override public void menuCanceled(MenuEvent e) { }
+        });
+        JMenu filterMenu = new JMenu("Filter");
+        filterMenu.addMenuListener(new MenuListener() {
+            @Override public void menuSelected(MenuEvent e) { fillFilterMenu(filterMenu); }
+            @Override public void menuDeselected(MenuEvent e) { }
+            @Override public void menuCanceled(MenuEvent e) { }
+        });
 
         JMenu view = new JMenu("Ansicht");
         view.addMenuListener(new MenuListener() {
@@ -317,6 +321,8 @@ public final class JsonLogViewer extends JFrame {
         JMenu extras = new JMenu("Extras");
         extras.add(item("Log-Generator…", 0, e -> showGenerator()));
         bar.add(file);
+        bar.add(schemaMenu);
+        bar.add(filterMenu);
         bar.add(view);
         bar.add(nav);
         bar.add(extras);
@@ -328,7 +334,7 @@ public final class JsonLogViewer extends JFrame {
         String current = schemaFile != null ? schemaFile.getFileName().toString()
                 : model.schema().auto ? "automatisch" : model.schema().title;
         Schema currentSchema = index == null && configuredSchema == null ? null : snapshot();
-        new GeneratorDialog(this, new File(prefs.get("lastDir", System.getProperty("user.dir"))),
+        new GeneratorDialog(this, new File(lastDir()),
                 currentSchema, current, this::openGenerated).setVisible(true);
     }
 
@@ -437,6 +443,9 @@ public final class JsonLogViewer extends JFrame {
         JPopupMenu pm = new JPopupMenu();
         pm.add(new JMenuItem(new AbstractAction("Kopiere Zelle") {
             @Override public void actionPerformed(ActionEvent e) { copyCell(); }
+        }));
+        pm.add(new JMenuItem(new AbstractAction("Kopiere als Markdown") {
+            @Override public void actionPerformed(ActionEvent e) { copyAsMarkdown(); }
         }));
         pm.add(new JMenuItem(new AbstractAction("Umliegender Zeitraum…") {
             @Override public void actionPerformed(ActionEvent e) { showSurroundingRange(); }
@@ -746,6 +755,207 @@ public final class JsonLogViewer extends JFrame {
             tz.setToolTipText("Keine Spalte mit Zeitstempeln erkannt");
         }
         view.add(tz);
+        view.addSeparator();
+        view.add(item("Einstellungen…", 0, e -> showSettings())); // immer der letzte Eintrag
+    }
+
+    private void showSettings() {
+        if (SettingsDialog.show(this)) table.repaint();
+    }
+
+    // ================================================================== Menü Schema
+
+    private void fillSchemaMenu(JMenu menu) {
+        menu.removeAll();
+        menu.add(item("Schema laden…", KeyEvent.VK_L, e -> chooseSchema()));
+        menu.add(item("Schema automatisch erkennen", 0, e -> {
+            flushSave();
+            configuredSchema = null;
+            schemaFile = null;
+            applySchema();
+        }));
+        menu.add(item("Schema speichern unter…", KeyEvent.VK_S, e -> saveSchemaAs()));
+        menu.addSeparator();
+        List<Settings.RecentSchema> recent = Settings.get().recentSchemas();
+        if (recent.isEmpty()) {
+            JMenuItem none = new JMenuItem("(noch keine Schemas geöffnet)");
+            none.setEnabled(false);
+            menu.add(none);
+        }
+        Path current = schemaFile == null ? null : schemaFile.toAbsolutePath().normalize();
+        int n = 0;
+        for (Settings.RecentSchema r : recent) {
+            n++;
+            boolean exists = java.nio.file.Files.isRegularFile(r.source());
+            boolean cached = r.cache() != null && java.nio.file.Files.isRegularFile(r.cache());
+            String title = r.title() == null || r.title().isBlank() ? "" : "  —  " + r.title();
+            JMenuItem mi = new JCheckBoxMenuItem((n < 10 ? n + " " : n + "  ") + r.source().getFileName() + title
+                    + (exists ? "" : cached ? "  (Kopie aus Cache)" : "  (fehlt)"));
+            mi.setSelected(r.source().equals(current) || (r.cache() != null && r.cache().equals(current)));
+            if (n < 10) mi.setMnemonic(KeyEvent.VK_0 + n);
+            mi.setToolTipText("<html>" + r.source() + (cached ? "<br>Cache: " + r.cache() : "")
+                    + (r.lastUsed() != null ? "<br>Zuletzt: " + r.lastUsed() : "") + "</html>");
+            mi.setEnabled(exists || cached);
+            mi.addActionListener(e -> openRecentSchema(r));
+            menu.add(mi);
+        }
+        if (!recent.isEmpty()) {
+            menu.addSeparator();
+            menu.add(item("Liste leeren", 0, e -> Settings.get().clearRecent()));
+        }
+    }
+
+    /** Öffnet ein zuletzt verwendetes Schema; fehlt das Original, die Kopie aus dem Cache. */
+    private void openRecentSchema(Settings.RecentSchema r) {
+        if (java.nio.file.Files.isRegularFile(r.source())) {
+            loadSchema(r.source());
+        } else if (r.cache() != null && java.nio.file.Files.isRegularFile(r.cache())) {
+            JOptionPane.showMessageDialog(this, "Das Schema gibt es nicht mehr:\n" + r.source()
+                    + "\n\nGeöffnet wird die Kopie aus dem Cache:\n" + r.cache()
+                    + "\n(Änderungen werden in der Kopie gespeichert.)", "Schema", JOptionPane.INFORMATION_MESSAGE);
+            loadSchema(r.cache(), false);
+        }
+    }
+
+    // ================================================================== Menü Filter
+
+    private void fillFilterMenu(JMenu menu) {
+        menu.removeAll();
+        JMenuItem saveAs = item("Speichern als…", 0, e -> saveFilterAs());
+        saveAs.setEnabled(index != null);
+        menu.add(saveAs);
+        menu.addSeparator();
+        List<Path> files = SavedFilter.list();
+        if (files.isEmpty()) {
+            JMenuItem none = new JMenuItem("(keine gespeicherten Filter)");
+            none.setEnabled(false);
+            menu.add(none);
+        }
+        for (Path p : files) {
+            JMenuItem mi = new JMenuItem(SavedFilter.displayName(p));
+            mi.setToolTipText(p.toString());
+            mi.setEnabled(index != null);
+            mi.addActionListener(e -> loadFilter(p));
+            menu.add(mi);
+        }
+        if (!files.isEmpty()) {
+            menu.addSeparator();
+            JMenu del = new JMenu("Löschen");
+            for (Path p : files) {
+                JMenuItem mi = new JMenuItem(SavedFilter.displayName(p));
+                mi.addActionListener(e -> {
+                    if (JOptionPane.showConfirmDialog(this, "Filter „" + SavedFilter.displayName(p) + "“ löschen?",
+                            "Filter löschen", JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return;
+                    try {
+                        java.nio.file.Files.deleteIfExists(p);
+                    } catch (IOException ex) {
+                        error("Löschen fehlgeschlagen", ex);
+                    }
+                });
+                del.add(mi);
+            }
+            menu.add(del);
+        }
+    }
+
+    /** Aktuelle Filtereinstellungen (Text, Auswahl, Level, Zeitraum) unter einem Namen speichern. */
+    private void saveFilterAs() {
+        String name = (String) JOptionPane.showInputDialog(this, "Name des Filters:", "Filter speichern",
+                JOptionPane.QUESTION_MESSAGE, null, null, lastFilterName != null ? lastFilterName : "");
+        if (name == null || name.isBlank()) return;
+        Path file = SavedFilter.fileFor(name);
+        if (java.nio.file.Files.exists(file) && JOptionPane.showConfirmDialog(this,
+                "Es gibt bereits einen Filter „" + name.trim() + "“. Überschreiben?", "Filter speichern",
+                JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return;
+        Map<String, List<String>> choices = new LinkedHashMap<>();
+        for (Map.Entry<Integer, ChoiceFilterButton> e : choiceButtons.entrySet()) {
+            Set<String> sel = e.getValue().selection();
+            if (!sel.isEmpty()) choices.put(model.column(e.getKey()).name(), sel.stream().sorted().toList());
+        }
+        Map<String, String> levels = new LinkedHashMap<>();
+        for (Map.Entry<Integer, JComboBox<String>> e : levelBoxes.entrySet()) {
+            int rank = e.getValue().getSelectedIndex();
+            if (rank > 0) levels.put(model.column(e.getKey()).name(), LogLevels.GROUPS[rank - 1][0]);
+        }
+        int sel = scopeBox.getSelectedIndex();
+        String scope = sel > 0 ? model.column(scopeColumns.get(sel - 1)).name() : "";
+        SavedFilter f = new SavedFilter(name.trim(), filterField.getText(), scope, regexBox.isSelected(),
+                invertBox.isSelected(), choices, levels, fromField.getText().trim(), toField.getText().trim(),
+                spinnerInt(extraBefore), spinnerInt(extraAfter));
+        try {
+            f.save(file);
+            lastFilterName = name.trim();
+            filterStatus.setText("Filter gespeichert: " + file.getFileName());
+        } catch (IOException ex) {
+            error("Filter konnte nicht gespeichert werden: " + file, ex);
+        }
+    }
+
+    /** Gespeicherten Filter einsetzen und anwenden. Spalten werden über ihren Namen gefunden. */
+    private void loadFilter(Path file) {
+        SavedFilter f;
+        try {
+            f = SavedFilter.load(file);
+        } catch (IOException | RuntimeException ex) {
+            error("Filter konnte nicht geladen werden: " + file, ex);
+            return;
+        }
+        List<String> missing = new ArrayList<>();
+        boolean schemaChanged = false;
+        // Spalten, die einen Auswahl-/Level-Filter brauchen, entsprechend einschalten
+        for (String col : f.choices().keySet()) {
+            int k = columnByName(col);
+            if (k < 0) missing.add(col);
+            else if (!model.column(k).choiceFilter()) { model.setColumn(k, model.column(k).withChoiceFilter(true)); schemaChanged = true; }
+        }
+        for (String col : f.minLevels().keySet()) {
+            int k = columnByName(col);
+            if (k < 0) missing.add(col);
+            else if (!model.column(k).logLevel()) { model.setColumn(k, model.column(k).withLogLevel(true)); schemaChanged = true; }
+        }
+        if (schemaChanged) {
+            rebuildChoiceBar();
+            scheduleSave();
+        }
+        resetChoiceWidgets();
+        for (Map.Entry<String, List<String>> e : f.choices().entrySet()) {
+            ChoiceFilterButton b = choiceButtons.get(columnByName(e.getKey()));
+            if (b != null) b.setSelection(e.getValue());
+        }
+        for (Map.Entry<String, String> e : f.minLevels().entrySet()) {
+            JComboBox<String> box = levelBoxes.get(columnByName(e.getKey()));
+            if (box == null) continue;
+            ActionListener[] ls = box.getActionListeners();
+            for (ActionListener l : ls) box.removeActionListener(l);
+            box.setSelectedIndex(Math.min(box.getItemCount() - 1, LogLevels.rank(e.getValue())));
+            for (ActionListener l : ls) box.addActionListener(l);
+        }
+        filterField.setText(f.text());
+        regexBox.setSelected(f.regex());
+        invertBox.setSelected(f.invert());
+        int scopeIndex = 0;
+        if (!f.scope().isBlank()) {
+            int k = columnByName(f.scope());
+            int i = scopeColumns.indexOf(k);
+            if (k < 0 || i < 0) missing.add(f.scope());
+            else scopeIndex = i + 1;
+        }
+        scopeBox.setSelectedIndex(scopeIndex);
+        fromField.setText(f.from());
+        toField.setText(f.to());
+        extraBefore.setValue(f.linesBefore());
+        extraAfter.setValue(f.linesAfter());
+        lastFilterName = f.name();
+        if (!missing.isEmpty())
+            JOptionPane.showMessageDialog(this, "Diese Spalten gibt es im aktuellen Schema nicht, ihr Filter entfällt:\n"
+                    + String.join(", ", missing), "Filter " + f.name(), JOptionPane.WARNING_MESSAGE);
+        applyFilter();
+    }
+
+    private int columnByName(String name) {
+        for (int k = 0; k < model.schemaColumnCount(); k++) if (model.column(k).name().equals(name)) return k;
+        for (int k = 0; k < model.schemaColumnCount(); k++) if (model.column(k).path().equals(name)) return k;
+        return -1;
     }
 
     private List<JMenuItem> columnToggles() {
@@ -859,6 +1069,7 @@ public final class JsonLogViewer extends JFrame {
             s.save(schemaFile);
             lastSavedSnapshot = text;
             configuredSchema = s;
+            Settings.get().refreshCache(schemaFile);
         } catch (IOException ex) {
             error("Schema konnte nicht gespeichert werden: " + schemaFile, ex);
         }
@@ -876,6 +1087,7 @@ public final class JsonLogViewer extends JFrame {
             s.save(target);
             schemaFile = target;
             configuredSchema = Schema.load(target);
+            Settings.get().rememberSchema(target, configuredSchema.title);
             lastSavedSnapshot = s.toYaml();
             tick();
         } catch (Exception ex) {
@@ -919,7 +1131,7 @@ public final class JsonLogViewer extends JFrame {
         });
 
         if (fc.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
-            prefs.put("lastDir", fc.getCurrentDirectory().getAbsolutePath());
+            Settings.get().setLastDir(fc.getCurrentDirectory().getAbsolutePath());
             openLog(fc.getSelectedFile().toPath(), seekButton.isSelected() ? LineIndex.Mode.SEEK : LineIndex.Mode.RAM);
         }
     }
@@ -937,13 +1149,13 @@ public final class JsonLogViewer extends JFrame {
         JFileChooser fc = chooser();
         fc.setFileFilter(new FileNameExtensionFilter("Schema (YAML, Properties)", "yaml", "yml", "properties"));
         if (fc.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
-            prefs.put("lastDir", fc.getCurrentDirectory().getAbsolutePath());
+            Settings.get().setLastDir(fc.getCurrentDirectory().getAbsolutePath());
             loadSchema(fc.getSelectedFile().toPath());
         }
     }
 
     private JFileChooser chooser() {
-        return new JFileChooser(prefs.get("lastDir", System.getProperty("user.dir")));
+        return new JFileChooser(lastDir());
     }
 
     private static boolean isSchemaFile(Path p) {
@@ -951,11 +1163,22 @@ public final class JsonLogViewer extends JFrame {
         return n.endsWith(".yaml") || n.endsWith(".yml") || n.endsWith(".properties");
     }
 
+    private static String lastDir() {
+        String d = Settings.get().lastDir();
+        return d != null && new File(d).isDirectory() ? d : System.getProperty("user.dir");
+    }
+
     void loadSchema(Path file) {
+        loadSchema(file, true);
+    }
+
+    /** @param remember in "Schema → zuletzt geöffnet" aufnehmen (nicht beim Öffnen der Cache-Kopie) */
+    void loadSchema(Path file, boolean remember) {
         flushSave();
         try {
             configuredSchema = Schema.load(file);
             schemaFile = file;
+            if (remember) Settings.get().rememberSchema(file, configuredSchema.title);
             applySchema();
         } catch (Exception ex) {
             error("Schema konnte nicht geladen werden: " + file, ex);
@@ -1723,6 +1946,96 @@ public final class JsonLogViewer extends JFrame {
         t.start();
     }
 
+    /**
+     * Ausgewählte Zeilen als Markdown für Dokumentationen: je Zeile eine Überschrift, kurze Werte als Liste,
+     * mehrzeilige oder lange Werte (Nachricht, Stacktrace, JSON) als Codeblock. Sichtbare Spalten in Anzeigereihenfolge.
+     */
+    private void copyAsMarkdown() {
+        int[] rows = table.getSelectedRows();
+        if (rows.length == 0 || index == null) return;
+        if (rows.length > 10_000) {
+            JOptionPane.showMessageDialog(this, "Bitte höchstens 10.000 Zeilen auf einmal als Markdown kopieren.");
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        try {
+            for (int r : rows) {
+                int line = model.lineAt(r);
+                if (!sb.isEmpty()) sb.append("\n---\n\n");
+                sb.append(markdownRow(line, index.readLine(line)));
+            }
+        } catch (IOException ex) {
+            error("Lesefehler", ex);
+            return;
+        }
+        Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(sb.toString()), null);
+        filterStatus.setText(rows.length == 1 ? "Zeile als Markdown kopiert" : rows.length + " Zeilen als Markdown kopiert");
+    }
+
+    private String markdownRow(int line, String text) {
+        StringBuilder head = new StringBuilder("### Zeile ").append(line + 1).append("\n\n");
+        Object root;
+        try {
+            root = Json.parse(text);
+        } catch (RuntimeException ex) {
+            return head.append(fence(text, "text")).toString();
+        }
+        StringBuilder list = new StringBuilder();
+        StringBuilder blocks = new StringBuilder();
+        for (int vc = 0; vc < table.getColumnCount(); vc++) {
+            int mc = table.convertColumnIndexToModel(vc);
+            if (mc == 0) continue;
+            Schema.Column c = model.column(mc - 1);
+            String value;
+            String lang = "text";
+            if (c.isRaw()) {
+                value = Json.stringify(root, true);
+                lang = "json";
+            } else {
+                Object o = Json.get(root, c.segments());
+                if (o == null) continue;
+                if (o instanceof Map || o instanceof List) {
+                    value = Json.stringify(o, true);
+                    lang = "json";
+                } else value = c.formatter().apply(o.toString());
+            }
+            if (value.isBlank()) continue;
+            String label = "**" + mdEscape(c.name()) + ":**";
+            if (lang.equals("json") || value.contains("\n") || value.length() > 120) {
+                blocks.append('\n').append(label).append("\n\n").append(fence(value.stripTrailing(), lang));
+            } else {
+                list.append("- ").append(label).append(' ')
+                    .append(value.indexOf(' ') < 0 ? inlineCode(value) : mdEscape(value)).append('\n');
+            }
+        }
+        return head.append(list).append(blocks).toString();
+    }
+
+    /** Codeblock; der Zaun ist länger als jede Backtick-Folge im Inhalt. */
+    private static String fence(String s, String lang) {
+        int longest = 0, run = 0;
+        for (int i = 0; i < s.length(); i++) {
+            run = s.charAt(i) == '`' ? run + 1 : 0;
+            longest = Math.max(longest, run);
+        }
+        String f = "`".repeat(Math.max(3, longest + 1));
+        return f + lang + "\n" + s + "\n" + f + "\n";
+    }
+
+    private static String inlineCode(String s) {
+        String f = s.contains("`") ? "``" : "`";
+        return f + (s.startsWith("`") || s.endsWith("`") ? " " + s + " " : s) + f;
+    }
+
+    private static String mdEscape(String s) {
+        StringBuilder sb = new StringBuilder(s.length() + 8);
+        for (char ch : s.toCharArray()) {
+            if ("\\`*_[]<>#|".indexOf(ch) >= 0) sb.append('\\');
+            sb.append(ch);
+        }
+        return sb.toString();
+    }
+
     private void copyRawLines() {
         int[] rows = table.getSelectedRows();
         if (rows.length == 0 || index == null) return;
@@ -1749,17 +2062,27 @@ public final class JsonLogViewer extends JFrame {
     private final class RowRenderer extends DefaultTableCellRenderer {
         private final Color invalidBg = new Color(0xF3E5F5);
         private final Color lineNoFg = new Color(0x888888);
+        private Font styledBase;
+        private Font[] styledFonts = new Font[4]; // Index = Font.BOLD | Font.ITALIC
 
         @Override
         public Component getTableCellRendererComponent(JTable t, Object value, boolean selected, boolean focus, int row, int col) {
             super.getTableCellRendererComponent(t, value, selected, focus, row, col);
             int modelCol = t.convertColumnIndexToModel(col);
             setHorizontalAlignment(modelCol == 0 ? SwingConstants.RIGHT : SwingConstants.LEFT);
+            LogTableModel.Row r = model.row(row);
+            Settings.LevelStyle st = r.levelRank() > 0 ? Settings.get().levelStyle(r.levelRank()) : Settings.LevelStyle.NONE;
+            int fontStyle = (st.bold() ? Font.BOLD : 0) | (st.italic() ? Font.ITALIC : 0);
+            Font base = t.getFont();
+            if (fontStyle != 0) {
+                if (styledBase != base) { styledBase = base; styledFonts = new Font[4]; }
+                if (styledFonts[fontStyle] == null) styledFonts[fontStyle] = base.deriveFont(fontStyle);
+                setFont(styledFonts[fontStyle]);
+            } else setFont(base);
             if (!selected) {
-                LogTableModel.Row r = model.row(row);
                 Color bg = r.invalid() ? invalidBg : r.background();
                 setBackground(bg != null ? bg : t.getBackground());
-                setForeground(modelCol == 0 ? lineNoFg : t.getForeground());
+                setForeground(modelCol == 0 ? lineNoFg : st.foreground() != null ? st.foreground() : t.getForeground());
             }
             if (modelCol != 0 && value != null) {
                 String s = value.toString();

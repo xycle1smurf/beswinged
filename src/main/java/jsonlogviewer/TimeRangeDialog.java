@@ -9,7 +9,6 @@ import java.time.DateTimeException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.util.prefs.Preferences;
 import javax.swing.BorderFactory;
 import javax.swing.ButtonGroup;
 import javax.swing.JButton;
@@ -51,14 +50,14 @@ final class TimeRangeDialog extends JDialog {
     private TimeRangeDialog(JFrame owner, LocalDateTime time, ZoneId zone, String zoneLabel) {
         super(owner, "Umliegender Zeitraum", true);
         this.zone = zone;
-        Preferences prefs = Preferences.userNodeForPackage(TimeRangeDialog.class);
+        Settings prefs = Settings.get();
         center.setZoneSupplier(() -> zone);
         center.setReferenceSupplier(() -> time);
         center.setDateTime(time);
-        span.setSelectedIndex(Math.max(0, Math.min(SPANS.length - 1, prefs.getInt("rangeSpan", 1))));
+        span.setSelectedIndex(Math.max(0, Math.min(SPANS.length - 1, prefs.rangeSpan())));
         ButtonGroup g = new ButtonGroup();
         g.add(around); g.add(before); g.add(after);
-        switch (prefs.get("rangeKind", "around")) {
+        switch (prefs.rangeKind()) {
             case "before" -> before.setSelected(true);
             case "after" -> after.setSelected(true);
             default -> around.setSelected(true);
@@ -88,8 +87,7 @@ final class TimeRangeDialog extends JDialog {
         JButton cancel = new JButton("Abbrechen");
         ok.addActionListener(e -> {
             if (compute()) {
-                prefs.putInt("rangeSpan", span.getSelectedIndex());
-                prefs.put("rangeKind", before.isSelected() ? "before" : after.isSelected() ? "after" : "around");
+                prefs.setRange(span.getSelectedIndex(), before.isSelected() ? "before" : after.isSelected() ? "after" : "around");
                 dispose();
             }
         });
