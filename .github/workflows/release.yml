@@ -1,5 +1,5 @@
-# Baut bei einem Tag v* die Jar und je Betriebssystem ein Programm mit eigener Java-Laufzeit
-# und legt damit ein GitHub Release an.
+# Baut bei einem Tag v* die Jar, je Betriebssystem ein Programm mit eigener Java-Laufzeit
+# und für Windows zusätzlich einen NSIS-Installer, und legt damit ein GitHub Release an.
 #   git tag v1.0.0 && git push origin v1.0.0
 # Über "Run workflow" (manuell) wird nur gebaut; die Dateien liegen dann als Artefakte am Lauf.
 name: Release
@@ -26,11 +26,20 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: maven
-      - name: Jar bauen
-        run: mvn -B -q package
-      - name: Programm mit Laufzeit bauen
+      - name: NSIS bereitstellen
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) { choco install nsis -y --no-progress }
+          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" -VERSION
+      - name: Jar und Programm mit Laufzeit bauen
         shell: bash
-        run: ./dist.sh "${{ github.ref_type == 'tag' && github.ref_name || '0.0.0' }}"
+        # Tag v1.2.0 -> Version 1.2.0; manuell gestartet: Version aus pom.xml
+        run: ./dist.sh "${{ github.ref_type == 'tag' && github.ref_name || '' }}"
+      - name: Installer vorhanden?
+        if: runner.os == 'Windows'
+        shell: bash
+        run: ls target/dist/*-setup.exe
       - name: Jar beilegen
         if: matrix.os == 'ubuntu-latest'
         shell: bash

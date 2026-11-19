@@ -10,7 +10,8 @@ Fertige Pakete gibt es unter [Releases](https://github.com/xycle1smurf/beswinged
 
 | Datei | Inhalt | Start |
 |---|---|---|
-| `beswinged-<Version>-windows-x64.zip` | Ordner mit eigener Java-Laufzeit, keine Installation nötig | entpacken, `beswingedeswinged.exe` |
+| `beswinged-<Version>-windows-x64-setup.exe` | Installer: Programme-Ordner, Startmenü, optional Desktop-Verknüpfung, Eintrag unter *Installierte Apps* | ausführen, dann Startmenü → beswinged |
+| `beswinged-<Version>-windows-x64.zip` | Ordner mit eigener Java-Laufzeit, keine Installation nötig | entpacken, `beswinged\beswinged.exe` |
 | `beswinged-<Version>-linux-x64.tar.gz` | dito | entpacken, `beswinged/bin/beswinged` |
 | `beswinged-<Version>-macos-aarch64.tar.gz` | `beswinged.app` (Apple Silicon) | entpacken, öffnen |
 | `beswinged.jar` | nur das Programm, benötigt Java 21+ | `java -jar beswinged.jar` |
@@ -84,6 +85,7 @@ Ohne Schema werden die Spalten automatisch aus den Top-Level-Feldern der ersten 
 | Menü Schema | Laden, automatisch erkennen, speichern unter und die **20 zuletzt geöffneten Schemas**. Jedes geöffnete Schema wird nach `~/.beswinged/schemas/` kopiert; fehlt das Original, öffnet der Eintrag die Kopie |
 | Menü Filter | *Speichern als…* legt Textfilter, Auswahl- und Level-Filter sowie Zeitraum unter einem Namen in `~/.beswinged/filters/<Name>.yaml` ab. Darunter die gespeicherten Filter zum Anwenden, unter *Löschen* zum Entfernen. Spalten werden über ihren Namen zugeordnet |
 | Ansicht → Einstellungen… | Darstellung ganzer Zeilen je Loglevel: fett, kursiv, Schriftfarbe. Standard: WARN, ERROR und FATAL fett, TRACE dunkelgrau |
+| Menü Hilfe | *Hilfe* (F1): Bedienungshilfe mit Tastenkürzeln. *Suche nach Updates…*: fragt bei GitHub das neueste Release ab und bietet bei einer neueren Version die Download-Seite an (es wird nur die Versionsnummer gesendet). *Über beswinged*: Version, Java-Laufzeit, Lizenzhinweis und der vollständige GPL-Text |
 
 Alle Filter wirken gemeinsam (UND). *Zurücksetzen* in der Filterleiste leert alle.
 
@@ -147,6 +149,16 @@ Mit `-Dbeswinged.home=<Ordner>` lässt sich ein anderes Verzeichnis verwenden.
 für das aktuelle Betriebssystem in `target/dist/`. Die Laufzeit enthält nur `java.base` und `java.desktop`
 (ca. 50 MB entpackt, 33 MB als ZIP). GraalVM oder eine Oracle-Lizenz werden nicht gebraucht; ein OpenJDK-Build
 wie Eclipse Temurin genügt.
+
+Unter Windows entsteht zusätzlich der Installer `…-setup.exe`, wenn [NSIS](https://nsis.sourceforge.io/) installiert ist
+(Skript: [packaging/windows/beswinged.nsi](packaging/windows/beswinged.nsi)). Er zeigt Liesmich und GPL auf einer
+Seite zum Akzeptieren, installiert nach *Programme\beswinged*, legt den Startmenü-Eintrag, optional eine
+Desktop-Verknüpfung, den Eintrag unter *Installierte Apps* und *App Paths* (Start mit Win+R → `beswinged`) an.
+Ans Anheften in der Taskleiste kommt ein Installer unter Windows 10/11 nicht heran; das geht per Rechtsklick
+auf das laufende Programm. Einstellungen in `~/.beswinged` bleiben bei der Deinstallation erhalten.
+
+Die Version kommt aus `pom.xml` (`<revision>`) bzw. aus dem Tag; *Hilfe → Über beswinged* zeigt sie an.
+Das Icon liegt als PNG in `src/main/resources/jsonlogviewer/icons/` und als `packaging/beswinged.ico`/`.png`.
 
 Ein Tag `v*` startet den Workflow [release.yml](.github/workflows/release.yml), der auf Windows, Linux und macOS
 baut und ein GitHub Release mit allen Paketen und der Jar anlegt:

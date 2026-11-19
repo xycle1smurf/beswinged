@@ -6,7 +6,7 @@
 
     <groupId>io.github.xycle1smurf</groupId>
     <artifactId>beswinged</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <version>${revision}</version>
     <packaging>jar</packaging>
 
     <name>beswinged</name>
@@ -25,6 +25,8 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <main.class>jsonlogviewer.JsonLogViewer</main.class>
+        <!-- Release-Builds setzen die Version: mvn package -Drevision=1.1.0 -->
+        <revision>1.1.0-SNAPSHOT</revision>
     </properties>
 
     <!-- Bewusst keine Dependencies: nur JDK 21 -->
@@ -32,6 +34,32 @@
     <build>
         <!-- ergibt target/beswinged.jar, startbar mit: java -jar target/beswinged.jar -->
         <finalName>${project.artifactId}</finalName>
+
+        <resources>
+            <!-- nur version.properties filtern, Bilder bleiben unverändert -->
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>**/version.properties</include>
+                </includes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>**/version.properties</exclude>
+                </excludes>
+            </resource>
+            <!-- Lizenztext für den Über-Dialog -->
+            <resource>
+                <directory>${project.basedir}</directory>
+                <includes>
+                    <include>LICENSE</include>
+                </includes>
+                <targetPath>META-INF</targetPath>
+            </resource>
+        </resources>
 
         <pluginManagement>
             <plugins>

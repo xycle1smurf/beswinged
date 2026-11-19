@@ -176,6 +176,7 @@ public final class JsonLogViewer extends JFrame {
         setLocationByPlatform(true);
         saveTimer.setRepeats(false);
 
+        setIconImages(HelpMenu.icons());
         buildMenu();
         JPanel north = new JPanel(new BorderLayout());
         north.add(buildToolbar(), BorderLayout.NORTH);
@@ -339,6 +340,7 @@ public final class JsonLogViewer extends JFrame {
         bar.add(extras);
         fillWindowMenu();
         bar.add(windowMenu);
+        bar.add(HelpMenu.create(this));
         setJMenuBar(bar);
     }
 
