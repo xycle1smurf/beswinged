@@ -157,6 +157,8 @@ public final class JsonLogViewer extends JFrame {
     // Tail / Zeitsuche / Datei-Modus
     static final long SEEK_THRESHOLD = 1L << 30; // ab 1 GB per Seek-Index
     private final JCheckBoxMenuItem tailItem = new JCheckBoxMenuItem("Tail / Schreiben folgen");
+    private final JCheckBoxMenuItem seekItem = new JCheckBoxMenuItem("Datei-Index (Seek)");
+    private Runnable afterIndexed; // einmalig nach dem Indizieren (z.B. Filter nach Moduswechsel)
     private final Timer tailTimer = new Timer(500, e -> tailPoll());
     private boolean tailBusy;
     // Zeitraum (Von/Bis + Zusatzzeilen)
@@ -289,6 +291,10 @@ public final class JsonLogViewer extends JFrame {
         tailItem.setToolTipText("Neu angehängte Zeilen laufend einlesen und ans Ende scrollen");
         tailItem.addActionListener(e -> setTail(tailItem.isSelected()));
         file.add(tailItem);
+        seekItem.setToolTipText("<html>An: nur Zeilen-Offsets und jeder " + LineIndex.TS_STEP + ". Zeitstempel im RAM, Zeilen werden aus der Datei gelesen.<br>"
+                + "Aus: ganze Datei im RAM. Umschalten lädt die Datei neu; Filter und Auswahl bleiben erhalten.</html>");
+        seekItem.addActionListener(e -> switchMode(seekItem.isSelected()));
+        file.add(seekItem);
         file.addSeparator();
         file.add(item("Beenden", 0, e -> dispose()));
 
@@ -867,6 +873,18 @@ public final class JsonLogViewer extends JFrame {
         if (java.nio.file.Files.exists(file) && JOptionPane.showConfirmDialog(this,
                 "Es gibt bereits einen Filter „" + name.trim() + "“. Überschreiben?", "Filter speichern",
                 JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return;
+        SavedFilter f = currentFilter(name.trim());
+        try {
+            f.save(file);
+            lastFilterName = name.trim();
+            filterStatus.setText("Filter gespeichert: " + file.getFileName());
+        } catch (IOException ex) {
+            error("Filter konnte nicht gespeichert werden: " + file, ex);
+        }
+    }
+
+    /** Aktueller Zustand aller Filter-Bedienelemente. */
+    private SavedFilter currentFilter(String name) {
         Map<String, List<String>> choices = new LinkedHashMap<>();
         for (Map.Entry<Integer, ChoiceFilterButton> e : choiceButtons.entrySet()) {
             Set<String> sel = e.getValue().selection();
@@ -879,16 +897,13 @@ public final class JsonLogViewer extends JFrame {
         }
         int sel = scopeBox.getSelectedIndex();
         String scope = sel > 0 ? model.column(scopeColumns.get(sel - 1)).name() : "";
-        SavedFilter f = new SavedFilter(name.trim(), filterField.getText(), scope, regexBox.isSelected(),
+        return new SavedFilter(name, filterField.getText(), scope, regexBox.isSelected(),
                 invertBox.isSelected(), choices, levels, fromField.getText().trim(), toField.getText().trim(),
                 spinnerInt(extraBefore), spinnerInt(extraAfter));
-        try {
-            f.save(file);
-            lastFilterName = name.trim();
-            filterStatus.setText("Filter gespeichert: " + file.getFileName());
-        } catch (IOException ex) {
-            error("Filter konnte nicht gespeichert werden: " + file, ex);
-        }
+    }
+
+    private static boolean isEmpty(SavedFilter f) {
+        return f.text().isEmpty() && f.choices().isEmpty() && f.minLevels().isEmpty() && f.from().isBlank() && f.to().isBlank();
     }
 
     /** Gespeicherten Filter einsetzen und anwenden. Spalten werden über ihren Namen gefunden. */
@@ -900,6 +915,15 @@ public final class JsonLogViewer extends JFrame {
             error("Filter konnte nicht geladen werden: " + file, ex);
             return;
         }
+        applySavedFilter(f, -1);
+        lastFilterName = f.name();
+    }
+
+    /**
+     * Setzt die Filter-Bedienelemente auf {@code f} und wendet sie an.
+     * @param focusLine danach auszuwählende Zeile (-1 = bisherige Auswahl)
+     */
+    private void applySavedFilter(SavedFilter f, int focusLine) {
         List<String> missing = new ArrayList<>();
         boolean schemaChanged = false;
         // Spalten, die einen Auswahl-/Level-Filter brauchen, entsprechend einschalten
@@ -945,11 +969,27 @@ public final class JsonLogViewer extends JFrame {
         toField.setText(f.to());
         extraBefore.setValue(f.linesBefore());
         extraAfter.setValue(f.linesAfter());
-        lastFilterName = f.name();
         if (!missing.isEmpty())
             JOptionPane.showMessageDialog(this, "Diese Spalten gibt es im aktuellen Schema nicht, ihr Filter entfällt:\n"
                     + String.join(", ", missing), "Filter " + f.name(), JOptionPane.WARNING_MESSAGE);
-        applyFilter();
+        if (isEmpty(f)) {
+            if (focusLine >= 0 && model.getRowCount() > 0) selectRow(model.nearestViewRow(focusLine));
+        } else applyFilter(focusLine, false);
+    }
+
+    // ================================================================== RAM / Seek umschalten
+
+    /** Datei → Datei-Index (Seek): geöffnete Datei im anderen Modus neu laden; Filter und Auswahl bleiben. */
+    private void switchMode(boolean seek) {
+        if (index == null) { seekItem.setSelected(false); return; }
+        LineIndex.Mode target = seek ? LineIndex.Mode.SEEK : LineIndex.Mode.RAM;
+        if (index.mode() == target) return;
+        SavedFilter state = currentFilter("Moduswechsel");
+        int line = table.getSelectedRow() >= 0 ? model.lineAt(table.getSelectedRow()) : -1;
+        LineIndex before = index;
+        openLog(index.path(), target);
+        seekItem.setSelected(index != null && index.mode() == LineIndex.Mode.SEEK); // Abbruch/Wechsel im Speicherdialog
+        if (index != before) afterIndexed = () -> applySavedFilter(state, line);
     }
 
     private int columnByName(String name) {
@@ -1223,6 +1263,7 @@ public final class JsonLogViewer extends JFrame {
                 // Fehler meldet das Öffnen
             }
         }
+        afterIndexed = null;
         flushSave();
         closeIndex();
         LineIndex idx;
@@ -1251,6 +1292,9 @@ public final class JsonLogViewer extends JFrame {
                         updateFilterControls();
                         startDistinctScan();
                         if (tailItem.isSelected()) scrollToEnd();
+                        Runnable after = afterIndexed;
+                        afterIndexed = null;
+                        if (after != null) after.run();
                     }
                 });
             } catch (IOException ex) {
@@ -1319,6 +1363,7 @@ public final class JsonLogViewer extends JFrame {
         if (index == null) {
             status.setText("Keine Datei geöffnet — Datei per Drag & Drop oder Strg+O öffnen");
             setTimeBarEnabled(false);
+            seekItem.setEnabled(false);
             return;
         }
         if (autoSchemaPending && (index.lineCount() >= AUTO_SAMPLE || index.isComplete())) applySchema();
@@ -1331,6 +1376,8 @@ public final class JsonLogViewer extends JFrame {
           .append(human(size))
           .append(index.mode() == LineIndex.Mode.RAM ? "  —  im RAM" : "  —  Seek-Index");
         if (tailItem.isSelected()) sb.append("  —  Tail");
+        seekItem.setSelected(index.mode() == LineIndex.Mode.SEEK);
+        seekItem.setEnabled(true);
         boolean ts = index.timestampSlots() > 0;
         setTimeBarEnabled(ts);
         zoneLabel.setText(ts ? "(" + zoneName(displayZone()) + ")" : "");

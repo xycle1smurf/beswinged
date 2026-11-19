@@ -36,6 +36,8 @@ Ohne Schema werden die Spalten automatisch aus den Top-Level-Feldern der ersten 
   - **Datei-Index (Seek)**: Die Datei wird einmal durchgelesen. Im RAM bleiben nur die Zeilenanfänge
     (8 Byte pro Zeile) und der Zeitstempel jeder 20. Zeile. Angezeigte Zeilen werden gezielt aus der Datei gelesen
     (3 Mio. Zeilen / 1,1 GB: 134 MB Heap statt 1,4 GB).
+- Nachträglich umschalten: *Datei → Datei-Index (Seek)* lädt die geöffnete Datei im anderen Modus neu.
+  Filter, Auswahlfilter, Zeitraum und ausgewählte Zeile bleiben erhalten.
 - Die Tabelle ist sofort bedienbar und wächst während des Indizierens mit.
 - Gelesen und geparst werden nur die **gerade sichtbaren Zeilen** (LRU-Cache mit 20.000 Zeilen).
 - Messung (1,15 GB, 5 Mio. Zeilen, `-Xmx512m`): Index 1,3 s, Volltextfilter 1,7 s,
