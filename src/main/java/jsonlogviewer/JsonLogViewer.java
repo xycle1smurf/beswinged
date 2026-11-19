@@ -24,7 +24,18 @@ import java.awt.event.WindowEvent;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.time.DateTimeException;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
+import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoField;
+import java.time.temporal.TemporalAccessor;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -59,6 +70,7 @@ import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JPopupMenu;
 import javax.swing.JProgressBar;
+import javax.swing.JRadioButton;
 import javax.swing.JRadioButtonMenuItem;
 import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
@@ -141,6 +153,16 @@ public final class JsonLogViewer extends JFrame {
     private long indexStartNanos;
     private long indexMillis = -1;
 
+    // Tail / Zeitsuche / Datei-Modus
+    static final long SEEK_THRESHOLD = 1L << 30; // ab 1 GB per Seek-Index
+    private final JCheckBoxMenuItem tailItem = new JCheckBoxMenuItem("Tail / Schreiben folgen");
+    private final Timer tailTimer = new Timer(500, e -> tailPoll());
+    private boolean tailBusy;
+    private final JTextField timeField = new JTextField(16);
+    private final JButton timeButton = new JButton("Gehe zu");
+    private Predicate<String> activeFilter; // Zeilentest des angewendeten Filters (null = keiner)
+    private int filteredUpTo;               // Zeilen < filteredUpTo hat der Filter geprüft
+
     public JsonLogViewer() {
         super("JSON Log Viewer");
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
@@ -173,6 +195,18 @@ public final class JsonLogViewer extends JFrame {
         });
         table.getColumnModel().addColumnModelListener(new ColumnListener());
         table.setComponentPopupMenu(buildPopup());
+        // Rechtsklick wählt die Zelle unter der Maus (bestehende Mehrfachauswahl bleibt erhalten)
+        table.addMouseListener(new MouseAdapter() {
+            @Override public void mousePressed(MouseEvent e) {
+                if (!javax.swing.SwingUtilities.isRightMouseButton(e)) return;
+                int r = table.rowAtPoint(e.getPoint()), c = table.columnAtPoint(e.getPoint());
+                if (r < 0 || c < 0) return;
+                if (table.isRowSelected(r)) {
+                    table.getColumnModel().getSelectionModel().setSelectionInterval(c, c);
+                    showDetail(false);
+                } else table.changeSelection(r, c, false, false);
+            }
+        });
         // Eigenes Menü für die Spaltenköpfe (sonst erbt der Header das Kontextmenü der Tabelle);
         // der Inhalt wird beim Öffnen passend zur Spalte unter der Maus aufgebaut.
         JPopupMenu headerPopup = new JPopupMenu();
@@ -240,6 +274,10 @@ public final class JsonLogViewer extends JFrame {
         JMenu file = new JMenu("Datei");
         file.add(item("Log öffnen…", KeyEvent.VK_O, e -> chooseLog()));
         file.add(item("Neu laden", KeyEvent.VK_F5, e -> reload()));
+        tailItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_T, Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx()));
+        tailItem.setToolTipText("Neu angehängte Zeilen laufend einlesen und ans Ende scrollen");
+        tailItem.addActionListener(e -> setTail(tailItem.isSelected()));
+        file.add(tailItem);
         file.addSeparator();
         file.add(item("Schema laden…", KeyEvent.VK_L, e -> chooseSchema()));
         file.add(item("Schema automatisch erkennen", 0, e -> {
@@ -329,12 +367,25 @@ public final class JsonLogViewer extends JFrame {
         clearButton.addActionListener(e -> resetAllFilters());
         tb.add(filterButton);
         tb.add(clearButton);
+        tb.addSeparator();
+        tb.add(new JLabel("Zeit: "));
+        timeField.setMaximumSize(new Dimension(190, 28));
+        timeField.setToolTipText("<html>Springt zur ersten Zeile ab diesem Zeitpunkt.<br>"
+                + "Formate: 2026-11-19 08:15:30, 19.11.2026 08:15, 08:15 (Datum der ausgewählten Zeile),<br>"
+                + "2026-11-19T07:15:00Z. Ohne Offset gilt die Zeitzone der Zeitstempel-Spalte.</html>");
+        timeField.addActionListener(e -> gotoTime());
+        tb.add(timeField);
+        timeButton.addActionListener(e -> gotoTime());
+        tb.add(timeButton);
         tb.add(Box.createHorizontalGlue());
         return tb;
     }
 
     private JPopupMenu buildPopup() {
         JPopupMenu pm = new JPopupMenu();
+        pm.add(new JMenuItem(new AbstractAction("Kopiere Zelle") {
+            @Override public void actionPerformed(ActionEvent e) { copyCell(); }
+        }));
         pm.add(new JMenuItem(new AbstractAction("Rohzeile(n) kopieren") {
             @Override public void actionPerformed(ActionEvent e) { copyRawLines(); }
         }));
@@ -783,9 +834,46 @@ public final class JsonLogViewer extends JFrame {
         fc.addChoosableFileFilter(new FileNameExtensionFilter("JSON (*.json, *.jsonl)", "json", "jsonl"));
         fc.addChoosableFileFilter(new FileNameExtensionFilter("Log (*.log)", "log"));
         fc.setFileFilter(fc.getAcceptAllFileFilter());
+
+        // Zusatz rechts im Dialog: Laden in den RAM oder per Seek-Index (ab 1 GB vorausgewählt)
+        JRadioButton ramButton = new JRadioButton("In den RAM laden");
+        JRadioButton seekButton = new JRadioButton("Datei-Index (Seek)");
+        ramButton.setToolTipText("Ganze Datei im Speicher: schnelles Scrollen und Filtern, braucht so viel RAM wie die Datei groß ist");
+        seekButton.setToolTipText("Nur Zeilen-Offsets und jeden " + LineIndex.TS_STEP
+                + ". Zeitstempel im RAM, Zeilen werden bei Bedarf aus der Datei gelesen");
+        ButtonGroup g = new ButtonGroup();
+        g.add(ramButton);
+        g.add(seekButton);
+        ramButton.setSelected(true);
+        JLabel sizeLabel = new JLabel(" ");
+        JPanel opts = new JPanel(new java.awt.GridLayout(0, 1, 0, 2));
+        opts.setBorder(BorderFactory.createTitledBorder("Laden"));
+        opts.add(ramButton);
+        opts.add(seekButton);
+        opts.add(sizeLabel);
+        JPanel acc = new JPanel(new BorderLayout());
+        acc.setBorder(BorderFactory.createEmptyBorder(0, 6, 0, 0));
+        acc.add(opts, BorderLayout.NORTH);
+        fc.setAccessory(acc);
+        fc.addPropertyChangeListener(JFileChooser.SELECTED_FILE_CHANGED_PROPERTY, ev -> {
+            File f = fc.getSelectedFile();
+            if (f == null || !f.isFile()) { sizeLabel.setText(" "); return; }
+            sizeLabel.setText("Größe: " + human(f.length()));
+            (defaultMode(f.toPath()) == LineIndex.Mode.SEEK ? seekButton : ramButton).setSelected(true);
+        });
+
         if (fc.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
             prefs.put("lastDir", fc.getCurrentDirectory().getAbsolutePath());
-            openLog(fc.getSelectedFile().toPath());
+            openLog(fc.getSelectedFile().toPath(), seekButton.isSelected() ? LineIndex.Mode.SEEK : LineIndex.Mode.RAM);
+        }
+    }
+
+    /** Ab 1 GB per Seek-Index, sonst in den RAM. */
+    static LineIndex.Mode defaultMode(Path file) {
+        try {
+            return java.nio.file.Files.size(file) >= SEEK_THRESHOLD ? LineIndex.Mode.SEEK : LineIndex.Mode.RAM;
+        } catch (IOException e) {
+            return LineIndex.Mode.SEEK;
         }
     }
 
@@ -827,16 +915,40 @@ public final class JsonLogViewer extends JFrame {
                 error("Schema konnte nicht geladen werden: " + schemaFile, ex);
             }
         }
-        if (index != null) openLog(index.path());
+        if (index != null) openLog(index.path(), index.mode());
         else applySchema();
     }
 
     void openLog(Path file) {
+        openLog(file, defaultMode(file));
+    }
+
+    void openLog(Path file, LineIndex.Mode mode) {
+        if (mode == LineIndex.Mode.RAM) {
+            // Passt die Datei in den Heap? Sonst Seek anbieten.
+            try {
+                long fileBytes = java.nio.file.Files.size(file);
+                Runtime rt = Runtime.getRuntime();
+                long free = rt.maxMemory() - (rt.totalMemory() - rt.freeMemory()) - (index != null ? index.ramBytes() : 0);
+                if (fileBytes > free - (256L << 20)) {
+                    int answer = JOptionPane.showConfirmDialog(this, String.format(
+                            "Die Datei (%s) passt nicht sicher in den verfügbaren Speicher (%s).%n"
+                            + "Stattdessen per Datei-Index (Seek) öffnen?%n%n"
+                            + "(Mehr Speicher z.B. mit: java -Xmx8g -jar beswinged.jar)",
+                            human(fileBytes), human(Math.max(0, free))),
+                            "Zu wenig Speicher", JOptionPane.YES_NO_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE);
+                    if (answer == JOptionPane.YES_OPTION) mode = LineIndex.Mode.SEEK;
+                    else if (answer != JOptionPane.NO_OPTION) return;
+                }
+            } catch (IOException ignored) {
+                // Fehler meldet das Öffnen
+            }
+        }
         flushSave();
         closeIndex();
         LineIndex idx;
         try {
-            idx = new LineIndex(file);
+            idx = new LineIndex(file, mode, timestampPathFor(configuredSchema));
         } catch (IOException ex) {
             error("Datei konnte nicht geöffnet werden: " + file, ex);
             return;
@@ -858,6 +970,7 @@ public final class JsonLogViewer extends JFrame {
                         tick();
                         updateFilterControls();
                         startDistinctScan();
+                        if (tailItem.isSelected()) scrollToEnd();
                     }
                 });
             } catch (IOException ex) {
@@ -893,6 +1006,7 @@ public final class JsonLogViewer extends JFrame {
             }
         }
         model = new LogTableModel(index, s);
+        activeFilter = null;
         table.setModel(model);
         buildColumns();
         lastSavedSnapshot = snapshot().toYaml();
@@ -924,6 +1038,8 @@ public final class JsonLogViewer extends JFrame {
     private void tick() {
         if (index == null) {
             status.setText("Keine Datei geöffnet — Datei per Drag & Drop oder Strg+O öffnen");
+            timeField.setEnabled(false);
+            timeButton.setEnabled(false);
             return;
         }
         if (autoSchemaPending && (index.lineCount() >= AUTO_SAMPLE || index.isComplete())) applySchema();
@@ -933,7 +1049,12 @@ public final class JsonLogViewer extends JFrame {
         StringBuilder sb = new StringBuilder();
         sb.append(index.path().getFileName()).append("  —  ")
           .append(String.format("%,d", index.lineCount())).append(" Zeilen  —  ")
-          .append(human(size));
+          .append(human(size))
+          .append(index.mode() == LineIndex.Mode.RAM ? "  —  im RAM" : "  —  Seek-Index");
+        if (tailItem.isSelected()) sb.append("  —  Tail");
+        boolean ts = index.timestampSlots() > 0;
+        timeField.setEnabled(ts);
+        timeButton.setEnabled(ts);
         if (!index.isComplete()) {
             int permille = size == 0 ? 0 : (int) (index.bytesScanned() * 1000 / size);
             sb.append("  —  indiziere… ").append(permille / 10).append('%');
@@ -1029,6 +1150,25 @@ public final class JsonLogViewer extends JFrame {
         Schema.Column col = sel > 0 ? model.column(scopeColumns.get(sel - 1)) : null;
         Predicate<String> textMatcher = matcher;
         boolean needJson = !conds.isEmpty() || (textMatcher != null && col != null && !col.isRaw());
+        Predicate<String> lineTest = s -> {
+            Object root = null;
+            boolean parsed = false;
+            if (needJson) {
+                try { root = Json.parse(s); parsed = true; } catch (RuntimeException ex) { /* kein JSON */ }
+            }
+            if (textMatcher != null) {
+                String target;
+                if (col == null || col.isRaw()) target = s;
+                else target = parsed ? LogTableModel.displayValue(col, root, s) : null;
+                boolean m = target != null && textMatcher.test(target);
+                if (m == invert) return false;
+            }
+            if (!conds.isEmpty()) {
+                if (!parsed) return false;
+                for (ColumnCondition c : conds) if (!c.test(root, s)) return false;
+            }
+            return true;
+        };
 
         filterCancel.set(true);
         AtomicBoolean cancel = new AtomicBoolean();
@@ -1050,24 +1190,7 @@ public final class JsonLogViewer extends JFrame {
                         if (cancel.get()) return false;
                         filterProgress = total == 0 ? 0 : (int) ((long) line * 1000 / total);
                     }
-                    Object root = null;
-                    boolean parsed = false;
-                    if (needJson) {
-                        try { root = Json.parse(s); parsed = true; } catch (RuntimeException ex) { /* kein JSON */ }
-                    }
-                    boolean ok = true;
-                    if (textMatcher != null) {
-                        String target;
-                        if (col == null || col.isRaw()) target = s;
-                        else target = parsed ? LogTableModel.displayValue(col, root, s) : null;
-                        boolean m = target != null && textMatcher.test(target);
-                        ok = m != invert;
-                    }
-                    if (ok && !conds.isEmpty()) {
-                        if (!parsed) ok = false;
-                        else for (ColumnCondition c : conds) if (!c.test(root, s)) { ok = false; break; }
-                    }
-                    if (ok) {
+                    if (lineTest.test(s)) {
                         if (count[0] == hits[0].length) hits[0] = Arrays.copyOf(hits[0], hits[0].length * 2);
                         hits[0][count[0]++] = line;
                     }
@@ -1084,6 +1207,8 @@ public final class JsonLogViewer extends JFrame {
                 if (cancel.get() || model != targetModel) return;
                 filterProgress = -1;
                 model.setFilter(result, count[0]);
+                activeFilter = lineTest;
+                filteredUpTo = total;
                 filterStatus.setText(String.format("Filter: %,d Treffer (%.1f s)", count[0], ms / 1000.0));
                 if (selectedLine >= 0 && count[0] > 0) selectRow(model.nearestViewRow(selectedLine));
                 tick();
@@ -1097,6 +1222,7 @@ public final class JsonLogViewer extends JFrame {
         filterCancel.set(true);
         filterProgress = -1;
         int selectedLine = table.getSelectedRow() >= 0 ? model.lineAt(table.getSelectedRow()) : -1;
+        activeFilter = null;
         model.setFilter(null, 0);
         filterStatus.setText(" ");
         if (selectedLine >= 0) selectRow(selectedLine);
@@ -1158,51 +1284,275 @@ public final class JsonLogViewer extends JFrame {
         if (!force && key.equals(lastDetailKey)) return;
         lastDetailKey = key;
 
-        String text;
+        DetailText d;
         try {
-            text = index.readLine(line);
+            d = detailText(line, mi);
         } catch (IOException ex) {
             detail.setText("Lesefehler: " + ex.getMessage());
             return;
         }
-        String body;
-        boolean wrap;
+        detailHeader.setText(d.header());
+        detail.setLineWrap(d.wrap());
+        detail.setWrapStyleWord(true);
+        detail.setText(d.body());
+        detail.setCaretPosition(0);
+    }
+
+    /** Inhalt der Detailansicht; {@code copy} ist der Wert für "Kopiere Zelle" (ohne Zusatz "Original"). */
+    private record DetailText(String header, String body, boolean wrap, String copy) {}
+
+    private DetailText detailText(int line, int mi) throws IOException {
+        String text = index.readLine(line);
         if (mi == 0) {
-            detailHeader.setText("Zeile " + (line + 1) + "  —  komplette Zeile");
-            wrap = false;
+            String header = "Zeile " + (line + 1) + "  —  komplette Zeile";
             try {
-                body = Json.stringify(Json.parse(text), true);
+                String body = Json.stringify(Json.parse(text), true);
+                return new DetailText(header, body, false, body);
             } catch (RuntimeException ex) {
-                body = "⚠ Kein gültiges JSON: " + ex.getMessage() + "\n\n" + text;
-                wrap = true;
-            }
-        } else {
-            Schema.Column c = model.column(mi - 1);
-            detailHeader.setText("Zeile " + (line + 1) + "  —  " + c.name()
-                    + (c.name().equals(c.path()) ? "" : "  (" + c.path() + ")"));
-            wrap = true;
-            if (c.isRaw()) body = text;
-            else {
-                try {
-                    Object v = Json.get(Json.parse(text), c.segments());
-                    if (v == null) body = "(kein Wert)";
-                    else if (v instanceof Map || v instanceof List) {
-                        body = Json.stringify(v, true);
-                        wrap = false;
-                    } else {
-                        String raw = v.toString(); // JSON-Escapes (\n, \t, \\uXXXX) sind bereits aufgelöst
-                        String formatted = c.formatter().apply(raw);
-                        body = formatted.equals(raw) ? raw : formatted + "\n\nOriginal: " + raw;
-                    }
-                } catch (RuntimeException ex) {
-                    body = "⚠ Kein gültiges JSON: " + ex.getMessage() + "\n\n" + text;
-                }
+                return new DetailText(header, "⚠ Kein gültiges JSON: " + ex.getMessage() + "\n\n" + text, true, text);
             }
         }
-        detail.setLineWrap(wrap);
-        detail.setWrapStyleWord(true);
-        detail.setText(body);
-        detail.setCaretPosition(0);
+        Schema.Column c = model.column(mi - 1);
+        String header = "Zeile " + (line + 1) + "  —  " + c.name()
+                + (c.name().equals(c.path()) ? "" : "  (" + c.path() + ")");
+        if (c.isRaw()) return new DetailText(header, text, true, text);
+        try {
+            Object v = Json.get(Json.parse(text), c.segments());
+            if (v == null) return new DetailText(header, "(kein Wert)", true, "");
+            if (v instanceof Map || v instanceof List) {
+                String body = Json.stringify(v, true);
+                return new DetailText(header, body, false, body);
+            }
+            String raw = v.toString(); // JSON-Escapes (\n, \t, \\uXXXX) sind bereits aufgelöst
+            String formatted = c.formatter().apply(raw);
+            String body = formatted.equals(raw) ? raw : formatted + "\n\nOriginal: " + raw;
+            return new DetailText(header, body, true, formatted);
+        } catch (RuntimeException ex) {
+            return new DetailText(header, "⚠ Kein gültiges JSON: " + ex.getMessage() + "\n\n" + text, true, text);
+        }
+    }
+
+    /** Kopiert den Wert der Zelle (Zeile + Spalte der Auswahl) so, wie ihn die Detailansicht zeigt. */
+    private void copyCell() {
+        int r = table.getSelectedRow();
+        if (r < 0 || index == null) return;
+        int lead = table.getColumnModel().getSelectionModel().getLeadSelectionIndex();
+        int mi = lead >= 0 && lead < table.getColumnCount() ? table.convertColumnIndexToModel(lead) : 0;
+        try {
+            String s = detailText(model.lineAt(r), mi).copy();
+            Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(s), null);
+        } catch (IOException ex) {
+            error("Lesefehler", ex);
+        }
+    }
+
+    // ================================================================== Zeitsuche
+
+    private static final DateTimeFormatter IN_TIME = new DateTimeFormatterBuilder()
+            .appendPattern("H:mm").optionalStart().appendPattern(":ss")
+            .optionalStart().appendFraction(ChronoField.NANO_OF_SECOND, 1, 9, true).optionalEnd().optionalEnd()
+            .toFormatter();
+    private static final DateTimeFormatter IN_ISO = timeInput("uuuu-MM-dd");
+    private static final DateTimeFormatter IN_DE = timeInput("d.M.uuuu");
+    private static final Pattern OFFSET_SUFFIX = Pattern.compile("(?:Z|[+-]\\d{2}(?::?\\d{2})?)$");
+
+    private static DateTimeFormatter timeInput(String datePattern) {
+        return new DateTimeFormatterBuilder().appendPattern(datePattern)
+                .optionalStart().appendLiteral(' ').append(IN_TIME).optionalEnd().toFormatter();
+    }
+
+    /** Springt zur ersten Zeile mit Zeitstempel >= Eingabe; nutzt den Zeitstempel-Index (jede 20. Zeile). */
+    private void gotoTime() {
+        if (index == null || index.timestampSlots() == 0) {
+            JOptionPane.showMessageDialog(this, "In dieser Datei wurden (noch) keine Zeitstempel gefunden.",
+                    "Zeitsuche", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        String input = timeField.getText().trim().replace('T', ' ').replace(',', '.');
+        if (input.isEmpty()) return;
+        try {
+            int ref = table.getSelectedRow() >= 0 ? model.lineAt(table.getSelectedRow()) : 0;
+            String refText = index.timestampText(index.readLine(ref));
+            Instant refInstant = refText == null ? null : CellFormatter.parseInstant(refText);
+            ZoneId zone = inputZone(refText);
+
+            Instant target;
+            if (OFFSET_SUFFIX.matcher(input).find() && input.matches("\\d{4}-.*")) {
+                target = CellFormatter.parseInstant(input.replace(' ', 'T'));
+            } else if (input.matches("\\d{1,2}:\\d{2}.*")) {
+                LocalTime t = LocalTime.parse(input, IN_TIME);
+                LocalDate day = refInstant != null ? refInstant.atZone(zone).toLocalDate() : LocalDate.now(zone);
+                target = day.atTime(t).atZone(zone).toInstant();
+            } else {
+                DateTimeFormatter f = input.matches("\\d{4}-.*") ? IN_ISO : IN_DE;
+                TemporalAccessor ta = f.parseBest(input, LocalDateTime::from, LocalDate::from);
+                LocalDateTime ldt = ta instanceof LocalDateTime l ? l : ((LocalDate) ta).atStartOfDay();
+                target = ldt.atZone(zone).toInstant();
+            }
+            if (target == null) throw new DateTimeParseException("ungültig", input, 0);
+
+            int line = index.findLineAtOrAfter(target.toEpochMilli());
+            if (line < 0) return;
+            int row = model.nearestViewRow(line);
+            if (row < 0) {
+                filterStatus.setText("Zeit: keine Zeile im Filter");
+                return;
+            }
+            selectRow(row);
+            String found = index.timestampText(index.readLine(model.lineAt(row)));
+            filterStatus.setText("Zeit " + target.atZone(zone).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss xxx"))
+                    + " → Zeile " + (model.lineAt(row) + 1) + (found != null ? " (" + found + ")" : ""));
+        } catch (DateTimeException ex) {
+            Toolkit.getDefaultToolkit().beep();
+            JOptionPane.showMessageDialog(this, "Zeitpunkt nicht erkannt: " + timeField.getText()
+                    + "\n\nBeispiele: 2026-11-19 08:15:30   19.11.2026 08:15   08:15   2026-11-19T07:15:00Z",
+                    "Zeitsuche", JOptionPane.ERROR_MESSAGE);
+        } catch (IOException ex) {
+            error("Lesefehler", ex);
+        }
+    }
+
+    /**
+     * Zeitzone für Eingaben ohne Offset: wie die Zeitstempel-Spalte angezeigt wird
+     * (lokal / UTC), sonst der Offset aus der Datei.
+     */
+    private ZoneId inputZone(String sampleTimestamp) {
+        String[] tsPath = index.timestampPath();
+        for (int k = 0; k < model.schemaColumnCount(); k++) {
+            Schema.Column c = model.column(k);
+            boolean isTs = c.formatter().isTimestamp() || (tsPath != null && Arrays.equals(c.segments(), tsPath));
+            if (!isTs) continue;
+            if (c.formatter() == CellFormatter.TIMESTAMP_LOCAL) return ZoneId.systemDefault();
+            if (c.formatter() == CellFormatter.TIMESTAMP_UTC) return ZoneOffset.UTC;
+            break;
+        }
+        if (sampleTimestamp != null) {
+            java.util.regex.Matcher m = Pattern.compile("([+-])(\\d{2}):?(\\d{2})?$").matcher(sampleTimestamp.trim());
+            if (m.find() && sampleTimestamp.contains(":")) {
+                try {
+                    int h = Integer.parseInt(m.group(2)), mm = m.group(3) == null ? 0 : Integer.parseInt(m.group(3));
+                    int sign = m.group(1).equals("-") ? -1 : 1;
+                    return ZoneOffset.ofHoursMinutes(sign * h, sign * mm);
+                } catch (DateTimeException ignored) { }
+            }
+        }
+        return ZoneOffset.UTC;
+    }
+
+    /** Zeitstempel-Pfad aus dem Schema (Spalte mit Zeitstempel-Formatter oder Namen), sonst null = automatisch. */
+    static String[] timestampPathFor(Schema s) {
+        if (s == null) return null;
+        for (Schema.Column c : s.columns) if (!c.isRaw() && c.formatter().isTimestamp()) return c.segments();
+        for (Schema.Column c : s.columns) {
+            String p = c.path().toLowerCase(Locale.ROOT);
+            if (!c.isRaw() && (p.contains("timestamp") || p.endsWith("time") || p.equals("@t"))) return c.segments();
+        }
+        return null;
+    }
+
+    // ================================================================== Tail
+
+    void setTail(boolean on) {
+        tailItem.setSelected(on);
+        if (on) {
+            tailTimer.start();
+            scrollToEnd();
+        } else tailTimer.stop();
+        tick();
+    }
+
+    private boolean isAtEnd() {
+        java.awt.Rectangle vis = table.getVisibleRect();
+        return vis.y + vis.height >= table.getHeight() - 2 * table.getRowHeight();
+    }
+
+    private void scrollToEnd() {
+        int n = model.getRowCount();
+        if (n > 0) table.scrollRectToVisible(table.getCellRect(n - 1, 0, true));
+    }
+
+    /** Liest im Hintergrund angehängte Zeilen; aktiver Filter und Auswahlwerte werden fortgeschrieben. */
+    private void tailPoll() {
+        LineIndex idx = index;
+        if (idx == null || !idx.isComplete() || tailBusy) return;
+        tailBusy = true;
+        LogTableModel m = model;
+        Predicate<String> filter = activeFilter;
+        int filterFrom = Math.max(0, filteredUpTo - 1); // letzte Zeile kann gewachsen sein
+        boolean follow = isAtEnd();
+        List<Integer> ks = new ArrayList<>();
+        for (Map.Entry<Integer, ChoiceFilterButton> e : choiceButtons.entrySet())
+            if (!e.getValue().isLoading()) ks.add(e.getKey());
+        Schema.Column[] cols = new Schema.Column[ks.size()];
+        for (int i = 0; i < cols.length; i++) cols[i] = m.column(ks.get(i));
+
+        Thread t = new Thread(() -> {
+            try {
+                int oldLines = idx.lineCount();
+                long oldSize = idx.fileSize();
+                int added = idx.extend();
+                if (added < 0) { // Datei wurde gekürzt/neu begonnen
+                    EventQueue.invokeLater(() -> {
+                        tailBusy = false;
+                        if (index == idx) openLog(idx.path(), idx.mode());
+                    });
+                    return;
+                }
+                if (idx.fileSize() == oldSize) {
+                    EventQueue.invokeLater(() -> tailBusy = false);
+                    return;
+                }
+                int newLines = idx.lineCount();
+                int distinctFrom = Math.max(0, oldLines - 1);
+                int from = filter != null ? Math.min(filterFrom, distinctFrom) : distinctFrom;
+                int[][] hits = {new int[64]};
+                int[] hc = {0};
+                List<Set<String>> sets = new ArrayList<>();
+                for (int i = 0; i < cols.length; i++) sets.add(new HashSet<>());
+                if (filter != null || cols.length > 0) {
+                    idx.scan(from, newLines, (line, s) -> {
+                        if (filter != null && line >= filterFrom && filter.test(s)) {
+                            if (hc[0] == hits[0].length) hits[0] = Arrays.copyOf(hits[0], hc[0] * 2);
+                            hits[0][hc[0]++] = line;
+                        }
+                        if (cols.length > 0 && line >= distinctFrom) {
+                            try {
+                                Object root = Json.parse(s);
+                                for (int i = 0; i < cols.length; i++) sets.get(i).add(LogTableModel.displayValue(cols[i], root, s));
+                            } catch (RuntimeException ignored) { }
+                        }
+                        return true;
+                    });
+                }
+                EventQueue.invokeLater(() -> {
+                    tailBusy = false;
+                    if (index != idx || model != m) return;
+                    if (oldLines > 0) m.invalidateLine(oldLines - 1);
+                    if (filter != null && activeFilter == filter) {
+                        m.replaceFilterTail(filterFrom, hits[0], hc[0]);
+                        filteredUpTo = newLines;
+                        filterStatus.setText(String.format("Filter: %,d Treffer (Tail)", m.getRowCount()));
+                    }
+                    for (int i = 0; i < cols.length; i++) {
+                        ChoiceFilterButton b = choiceButtons.get(ks.get(i));
+                        if (b == null) continue;
+                        Comparator<String> cmp = String.CASE_INSENSITIVE_ORDER;
+                        if (cols[i].logLevel()) cmp = Comparator.comparingInt(LogLevels::rank).thenComparing(cmp);
+                        b.addValues(sets.get(i), cmp, DISTINCT_LIMIT);
+                    }
+                    tick();
+                    if (follow) scrollToEnd();
+                });
+            } catch (IOException ex) {
+                EventQueue.invokeLater(() -> {
+                    tailBusy = false;
+                    setTail(false);
+                    error("Tail abgebrochen", ex);
+                });
+            }
+        }, "tail");
+        t.setDaemon(true);
+        t.start();
     }
 
     private void copyRawLines() {
@@ -1256,20 +1606,29 @@ public final class JsonLogViewer extends JFrame {
     public static void main(String[] args) {
         Path log = null;
         Path schema = null;
+        LineIndex.Mode mode = null;
+        boolean tail = false;
         for (int i = 0; i < args.length; i++) {
             String a = args[i];
             if ((a.equals("--schema") || a.equals("-s")) && i + 1 < args.length) schema = Path.of(args[++i]);
+            else if (a.equals("--ram")) mode = LineIndex.Mode.RAM;
+            else if (a.equals("--seek")) mode = LineIndex.Mode.SEEK;
+            else if (a.equals("--tail") || a.equals("-f")) tail = true;
             else if (a.equals("-h") || a.equals("--help")) {
-                System.out.println("Aufruf: java -jar beswinged.jar [logdatei] [--schema schema.yaml|schema.properties]");
+                System.out.println("Aufruf: java -jar beswinged.jar [logdatei] [--schema schema.yaml|schema.properties]"
+                        + " [--ram|--seek] [--tail]");
                 return;
             } else log = Path.of(a);
         }
         Path fLog = log, fSchema = schema;
+        LineIndex.Mode fMode = mode;
+        boolean fTail = tail;
         EventQueue.invokeLater(() -> {
             try { UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName()); } catch (Exception ignored) { }
             JsonLogViewer v = new JsonLogViewer();
             if (fSchema != null) v.loadSchema(fSchema);
-            if (fLog != null) v.openLog(fLog);
+            if (fTail) v.setTail(true);
+            if (fLog != null) v.openLog(fLog, fMode != null ? fMode : defaultMode(fLog));
             v.tick();
             v.setVisible(true);
         });

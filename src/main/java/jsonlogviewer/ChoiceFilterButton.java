@@ -69,6 +69,23 @@ public final class ChoiceFilterButton extends JButton {
         updateText();
     }
 
+
+    /** Weitere Werte ergänzen (Tail). */
+    public void addValues(java.util.Collection<String> more, java.util.Comparator<String> order, int limit) {
+        if (loading || more.isEmpty()) return;
+        Set<String> all = new LinkedHashSet<>(values);
+        int before = all.size();
+        for (String v : more) {
+            if (all.size() >= limit) { if (!all.contains(v)) overflow = true; }
+            else all.add(v);
+        }
+        if (all.size() == before) return;
+        List<String> l = new java.util.ArrayList<>(all);
+        l.sort(order);
+        values = l;
+        updateText();
+    }
+
     public boolean isLoading() { return loading; }
 
     /** Ausgewählte Werte; leer = alle. */

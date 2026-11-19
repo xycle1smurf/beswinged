@@ -69,6 +69,31 @@ public final class LogTableModel extends AbstractTableModel {
         }
     }
 
+
+    /** Zeile neu lesen lassen (Tail: die letzte Zeile kann beim Schreiben noch gewachsen sein). */
+    public void invalidateLine(int line) {
+        if (cache.remove(line) != null) {
+            int r = filter == null ? line : Arrays.binarySearch(filter, 0, filterCount, line);
+            if (r >= 0 && r < rowCount) fireTableRowsUpdated(r, r);
+        }
+    }
+
+    /** Filter um Zeilen ab {@code fromLine} ersetzen (Tail mit aktivem Filter). Zeilen aufsteigend. */
+    public void replaceFilterTail(int fromLine, int[] lines, int count) {
+        if (filter == null) return;
+        int keep = Arrays.binarySearch(filter, 0, filterCount, fromLine);
+        if (keep < 0) keep = -keep - 1;
+        int old = rowCount;
+        int need = keep + count;
+        if (need > filter.length) filter = Arrays.copyOf(filter, Math.max(need, filter.length * 2));
+        System.arraycopy(lines, 0, filter, keep, count);
+        filterCount = need;
+        rowCount = need;
+        if (need < old) fireTableRowsDeleted(need, old - 1);
+        if (keep < Math.min(old, need)) fireTableRowsUpdated(keep, Math.min(old, need) - 1);
+        if (need > old) fireTableRowsInserted(old, need - 1);
+    }
+
     public void setFilter(int[] lines, int count) {
         this.filter = lines;
         this.filterCount = count;

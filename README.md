@@ -13,6 +13,8 @@ mvn package
 java -jar target/beswinged.jar app.log --schema schema.example.yaml
 ```
 
+Weitere Optionen: `--ram` bzw. `--seek` (Lademodus, sonst ab 1 GB Seek), `--tail` (Tail einschalten).
+
 Zum Ausprobieren liegt ein Beispiel im Format von logstash-logback-encoder bei (240 Zeilen, alle 15 s, TRACE bis ERROR):
 
 ```bat
@@ -28,8 +30,13 @@ Ohne Schema werden die Spalten automatisch aus den Top-Level-Feldern der ersten 
 
 ## Wie es mit großen Dateien umgeht
 
-- Beim Öffnen wird im Hintergrund nur ein **Index der Zeilenanfänge** aufgebaut (8 Byte pro Zeile).
-  Die Tabelle ist sofort bedienbar und wächst mit.
+- Beim Öffnen fragt der Dateidialog, wie geladen wird (ab 1 GB ist *Datei-Index (Seek)* vorausgewählt):
+  - **In den RAM laden**: Die Datei liegt komplett im Speicher. Scrollen und Filtern sind am schnellsten,
+    braucht aber etwa so viel Heap wie die Datei groß ist. Passt sie nicht, bietet der Viewer Seek an.
+  - **Datei-Index (Seek)**: Die Datei wird einmal durchgelesen. Im RAM bleiben nur die Zeilenanfänge
+    (8 Byte pro Zeile) und der Zeitstempel jeder 20. Zeile. Angezeigte Zeilen werden gezielt aus der Datei gelesen
+    (3 Mio. Zeilen / 1,1 GB: 134 MB Heap statt 1,4 GB).
+- Die Tabelle ist sofort bedienbar und wächst während des Indizierens mit.
 - Gelesen und geparst werden nur die **gerade sichtbaren Zeilen** (LRU-Cache mit 20.000 Zeilen).
 - Messung (1,15 GB, 5 Mio. Zeilen, `-Xmx512m`): Index 1,3 s, Volltextfilter 1,7 s,
   Spaltenfilter mit vollständigem JSON-Parse 2,7 s.
@@ -49,7 +56,9 @@ Ohne Schema werden die Spalten automatisch aus den Top-Level-Feldern der ersten 
 | Strg+O / Strg+L / F5 | Log öffnen / Schema laden / Neu laden (Dateiauswahl filtert wahlweise `*.json`/`*.jsonl` oder `*.log`) |
 | Strg+S | Schema speichern unter… |
 | Strg+G | Gehe zu Zeile |
-| Rechtsklick in der Tabelle | Rohzeile(n) oder Zellen kopieren |
+| Zeit (Filterleiste) | Springt zur ersten Zeile ab einem Zeitpunkt, z.B. `2026-11-19 08:15:30`, `19.11.2026 08:15`, `08:15` (Datum der ausgewählten Zeile) oder `2026-11-19T07:15:00Z`. Ohne Offset gilt die Zeitzone, in der die Zeitstempel-Spalte angezeigt wird. Über den Index werden nur ca. 40 Zeilen gelesen und geparst, auch im Seek-Modus |
+| Datei → Tail / Schreiben folgen (Strg+T) | Liest angehängte Zeilen alle 0,5 s nach. Aktive Filter und Auswahlwerte werden fortgeschrieben. Steht die Ansicht am Ende, scrollt sie mit |
+| Rechtsklick in der Tabelle | *Kopiere Zelle*: der Wert wie in der Detailansicht (formatiert, mit echten Zeilenumbrüchen und Unicode); außerdem Rohzeile(n) oder Zellen kopieren |
 
 Alle Filter wirken gemeinsam (UND). *Zurücksetzen* in der Filterleiste leert alle.
 
@@ -98,7 +107,9 @@ Nicht unterstützt: Anker/Aliase, mehrzeilige Strings (`|`, `>`), `{…}`-Flow-M
 ## Grenzen
 
 - Kein Sortieren (bei Millionen Zeilen wäre das teuer). Die Reihenfolge entspricht der Datei.
-- Kein Live-Tail. *Neu laden* (F5) liest die Datei neu ein.
+- Die Zeitsuche setzt zeitlich sortierte Zeilen voraus (Binärsuche über den Zeitstempel-Index).
+- Tail verfolgt die geöffnete Datei. Wird sie gekürzt, wird sie neu geladen. Nach einer Rotation
+  (Umbenennen und neue Datei anlegen) bitte die neue Datei öffnen.
 - Einzelne Zeilen werden ab 64 MB abgeschnitten, Zelltexte ab 2.000 Zeichen.
 
 ## Log-Generator auf der Kommandozeile
