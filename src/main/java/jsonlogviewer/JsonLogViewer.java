@@ -65,7 +65,7 @@ import javax.swing.table.TableColumn;
 /**
  * Swing-Viewer für große JSON-Lines-Logdateien. Nur JDK, keine Fremdbibliotheken.
  *
- * Aufruf: java -jar jsonlogviewer.jar [logdatei] [--schema schema.yaml|schema.properties]
+ * Aufruf: java -jar beswinged.jar [logdatei] [--schema schema.yaml|schema.properties]
  */
 public final class JsonLogViewer extends JFrame {
 
@@ -642,7 +642,7 @@ public final class JsonLogViewer extends JFrame {
             String a = args[i];
             if ((a.equals("--schema") || a.equals("-s")) && i + 1 < args.length) schema = Path.of(args[++i]);
             else if (a.equals("-h") || a.equals("--help")) {
-                System.out.println("Aufruf: java -jar jsonlogviewer.jar [logdatei] [--schema schema.yaml|schema.properties]");
+                System.out.println("Aufruf: java -jar beswinged.jar [logdatei] [--schema schema.yaml|schema.properties]");
                 return;
             } else log = Path.of(a);
         }

@@ -6,12 +6,15 @@ Swing-Viewer für große JSON-Lines-Logdateien (ein JSON-Objekt pro Zeile).
 
 ## Bauen & Starten
 
+Mit Maven (Standard-Layout, Quellen unter `src/main/java`):
+
 ```bat
-build.cmd
-java -jar jsonlogviewer.jar app.log --schema schema.example.yaml
+mvn package
+java -jar target/beswinged.jar app.log --schema schema.example.yaml
 ```
 
-Unter Linux/macOS `./build.sh`. Alle Argumente sind optional. Log- und Schema-Dateien lassen sich auch
+Ohne Maven geht es auch nur mit dem JDK: `build.cmd` (Windows) bzw. `./build.sh` (Linux/macOS)
+erzeugen dasselbe `target/beswinged.jar`. Alle Argumente sind optional. Log- und Schema-Dateien lassen sich auch
 per Menü oder Drag & Drop ins Fenster öffnen (`.yaml`/`.yml`/`.properties` werden als Schema erkannt).
 
 Ohne Schema werden die Spalten automatisch aus den Top-Level-Feldern der ersten 200 Zeilen erkannt.

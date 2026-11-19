@@ -1,8 +1,9 @@
 @echo off
-rem Baut jsonlogviewer.jar (benoetigt JDK 21+ im PATH)
+rem Baut target\beswinged.jar ohne Maven (benoetigt JDK 21+ im PATH).
+rem Mit Maven: mvn package
 setlocal
 cd /d "%~dp0"
-if exist out rmdir /s /q out
-javac --release 21 -encoding UTF-8 -d out src\jsonlogviewer\*.java || exit /b 1
-jar --create --file jsonlogviewer.jar --main-class jsonlogviewer.JsonLogViewer -C out . || exit /b 1
-echo Fertig: jsonlogviewer.jar
+if exist target rmdir /s /q target
+javac --release 21 -encoding UTF-8 -d target\classes src\main\java\jsonlogviewer\*.java || exit /b 1
+jar --create --file target\beswinged.jar --main-class jsonlogviewer.JsonLogViewer -C target\classes . || exit /b 1
+echo Fertig: target\beswinged.jar
