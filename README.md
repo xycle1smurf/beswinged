@@ -73,6 +73,8 @@ Ohne Schema werden die Spalten automatisch aus den Top-Level-Feldern der ersten 
 | Ansicht | Spalten ein-/ausblenden, *Zeitzone* für alle Zeitstempel-Spalten |
 | Spaltenköpfe | Per Drag & Drop umsortieren. Rechtsklick: *Ausblenden*, *Zeitzone* (bei Zeitstempeln), *Package original / compact / Class only* (bei Klassennamen), *Auswahlfilter*, *Spaltentyp Loglevel* |
 | Extras → Log-Generator | Erzeugt ein Beispiel-Log mit wählbarer Zeilenzahl und wählbarem Zeitabstand. Entweder im Logstash-Format oder passend zu einem Schema: Jeder Spaltenpfad wird anhand seines Namens befüllt |
+| Extras → Connect… (Strg+K) | Holt das Log aus Kubernetes oder OpenShift mit `kubectl` bzw. `oc`: Cluster, Namespace, Art (Pod, Deployment, ReplicaSet, StatefulSet, DaemonSet, DeploymentConfig), Name und optional Container. *Laden* listet Namespaces bzw. Pods/Workloads mit Status und Containern. Bei Workloads werden alle Pods über deren Label-Selector gelesen. Optional *Seit* (`--since`), *Letzte Zeilen* (`--tail`), *Vorheriger Container* (`--previous`). Der Befehl wird vorab angezeigt. Das Log landet in `~/.beswinged/kube/<Cluster>_<Namespace>_<Name>.jsonl` und wird geöffnet. Mit *Folgen* läuft `logs -f` weiter und Tail ist an; *Datei → Schließen* oder Programmende beendet es |
+| Extras → Connect Settings… | Cluster verwalten: Name, Werkzeug (`kubectl`/`oc`), optional Programmpfad, kubeconfig-Datei, Kontext (*Laden* listet die Kontexte), Standard-Namespace. *Aus kubeconfig importieren* legt je Kontext einen Eintrag an, *Verbindung testen* zeigt Server-Version und ob Logs gelesen werden dürfen. **Zugangsdaten speichert beswinged nicht**; angemeldet wird wie gewohnt (`oc login`, `az aks get-credentials`, …), das füllt die kubeconfig |
 | Strg+O / Strg+L / F5 | Log öffnen / Schema laden / Neu laden (Dateiauswahl filtert wahlweise `*.json`/`*.jsonl` oder `*.log`). Neu laden behält Filter und Auswahl |
 | Menü Fenster | Alle geöffneten Logdateien (RAM oder Seek) in Öffnungsreihenfolge, die zuletzt geöffnete unten. Strg+1 … Strg+9 wechselt. Jede Datei behält ihr Schema, ihre Filter, ihren Zeitraum und die ausgewählte Zeile. Eine bereits offene Datei erneut zu öffnen wechselt nur zu ihr |
 | Datei → Schließen (Strg+W) | Schließt die angezeigte Datei und entfernt sie aus *Fenster*. Angezeigt wird dann die Datei davor, sonst die danach, sonst ein leeres Fenster |
@@ -141,6 +143,8 @@ Alles Benutzerbezogene liegt in `~/.beswinged/` (unter Windows `%USERPROFILE%\.b
   Beim Start werden die offenen Dateien wiederhergestellt; eingelesen wird zunächst nur die aktive, die übrigen beim ersten Anzeigen
 - `schemas/`: Kopien der zuletzt geöffneten Schemas (Cache)
 - `filters/`: gespeicherte Filter, je Datei ein Filter
+- `kube/`: mit *Extras → Connect* geholte Logs (und je eine `.err.txt` mit der Fehlerausgabe von kubectl/oc).
+  Die Cluster stehen in `settings.yaml` unter `clusters`, die letzten Eingaben des Connect-Dialogs unter `connect`
 
 Mit `-Dbeswinged.home=<Ordner>` lässt sich ein anderes Verzeichnis verwenden.
 

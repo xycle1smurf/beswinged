@@ -24,6 +24,7 @@ th { text-align: left; background-color: #E6EDF6; }
 <a href="#tabelle">Tabelle &amp; Kopieren</a> &middot;
 <a href="#tail">Tail</a> &middot;
 <a href="#fenster">Mehrere Dateien</a> &middot;
+<a href="#kube">Kubernetes</a> &middot;
 <a href="#einstellungen">Einstellungen</a> &middot;
 <a href="#tasten">Tastenkürzel</a> &middot;
 <a href="#grenzen">Grenzen</a>
@@ -108,6 +109,17 @@ Jede Datei behält Schema, Filter, Zeitraum und Auswahl.</li>
 <li>Beim nächsten Start sind alle Dateien wieder da.</li>
 </ul>
 
+<a name="kube"></a><h2>Kubernetes / OpenShift</h2>
+<ul>
+<li><i>Extras &rarr; Connect Settings…</i>: Cluster anlegen (Werkzeug <code>kubectl</code> oder <code>oc</code>, kubeconfig, Kontext,
+Standard-Namespace). <i>Aus kubeconfig importieren</i> legt je Kontext einen Eintrag an, <i>Verbindung testen</i> prüft den Zugriff.
+Passwörter und Tokens speichert beswinged nicht: Angemeldet wird wie gewohnt, z.B. mit <code>oc login</code>.</li>
+<li><i>Extras &rarr; Connect…</i> (Strg+K): Cluster, Namespace, Art (Pod oder Deployment, ReplicaSet, StatefulSet, DaemonSet,
+DeploymentConfig) und Name wählen; <i>Laden</i> listet die vorhandenen mit Status. Bei Workloads werden alle Pods gelesen.</li>
+<li><i>Seit</i>, <i>Letzte Zeilen</i> und <i>Vorheriger Container</i> begrenzen das Log. Mit <i>Folgen</i> kommen neue Zeilen laufend
+hinzu (Tail); <i>Datei &rarr; Schließen</i> beendet die Verbindung.</li>
+</ul>
+
 <a name="einstellungen"></a><h2>Einstellungen</h2>
 <ul>
 <li><i>Ansicht &rarr; Einstellungen…</i>: Darstellung der Zeilen je Loglevel (fett, kursiv, Farbe).</li>
@@ -126,6 +138,7 @@ Jede Datei behält Schema, Filter, Zeitraum und Auswahl.</li>
 <tr><td>Strg+G</td><td>Gehe zu Zeile</td></tr>
 <tr><td>Strg+Pos1 / Strg+Ende</td><td>Zum Anfang / Zum Ende</td></tr>
 <tr><td>Strg+1 … Strg+9</td><td>Zur Datei im Menü Fenster</td></tr>
+<tr><td>Strg+K</td><td>Connect (Kubernetes/OpenShift)</td></tr>
 <tr><td>F1</td><td>Diese Hilfe</td></tr>
 </table>
 

@@ -49,6 +49,24 @@ final class Settings {
     private String rangeKind = "around";
     private String loadError;
 
+    /**
+     * Cluster für Extras → Connect. Zugangsdaten liegen nur in der kubeconfig; hier steht, welche Datei und welcher
+     * Kontext verwendet wird. Leere Felder: Standard des Werkzeugs (PATH, KUBECONFIG bzw. ~/.kube/config, aktueller Kontext).
+     */
+    record Cluster(String name, String tool, String toolPath, String kubeconfig, String context, String namespace) {
+        boolean isOc() { return "oc".equals(tool); }
+        @Override public String toString() { return name; }
+    }
+
+    /** Letzte Eingaben im Connect-Dialog. */
+    record ConnectPrefs(String cluster, String namespace, String kind, String name, String container,
+                        String since, int tailLines, boolean previous, boolean follow) {
+        static final ConnectPrefs EMPTY = new ConnectPrefs("", "", "Pod", "", "", "", 0, false, true);
+    }
+
+    private final List<Cluster> clusters = new ArrayList<>();
+    private ConnectPrefs connectPrefs = ConnectPrefs.EMPTY;
+
     static synchronized Settings get() {
         if (instance == null) {
             String home = System.getProperty("beswinged.home");
@@ -92,6 +110,24 @@ final class Settings {
     int rangeSpan() { return rangeSpan; }
     String rangeKind() { return rangeKind; }
     void setRange(int span, String kind) { rangeSpan = span; rangeKind = kind; save(); }
+
+    // ------------------------------------------------------------------ Kubernetes / OpenShift
+
+    List<Cluster> clusters() { return List.copyOf(clusters); }
+
+    void setClusters(List<Cluster> list) {
+        clusters.clear();
+        clusters.addAll(list);
+        save();
+    }
+
+    ConnectPrefs connectPrefs() { return connectPrefs; }
+
+    void setConnectPrefs(ConnectPrefs p) {
+        if (p.equals(connectPrefs)) return;
+        connectPrefs = p;
+        save();
+    }
 
     // ------------------------------------------------------------------ Loglevel-Darstellung
 
@@ -242,6 +278,22 @@ final class Settings {
                 if (!st.isDefault()) levelStyles.put(rank, st);
             }
         }
+        if (m.get("clusters") instanceof List<?> l) {
+            for (Object o : l) {
+                if (!(o instanceof Map<?, ?> e) || str(e.get("name")).isBlank()) continue;
+                String tool = "oc".equalsIgnoreCase(str(e.get("tool")).trim()) ? "oc" : "kubectl";
+                clusters.add(new Cluster(str(e.get("name")), tool, str(e.get("toolPath")), str(e.get("kubeconfig")),
+                        str(e.get("context")), str(e.get("namespace"))));
+            }
+        }
+        if (m.get("connect") instanceof Map<?, ?> c) {
+            int tail = 0;
+            try { tail = Integer.parseInt(str(c.get("tailLines")).trim()); } catch (NumberFormatException ignored) { }
+            String kind = str(c.get("kind"));
+            connectPrefs = new ConnectPrefs(str(c.get("cluster")), str(c.get("namespace")), kind.isBlank() ? "Pod" : kind,
+                    str(c.get("name")), str(c.get("container")), str(c.get("since")), tail,
+                    bool(c.get("previous")), c.get("follow") == null || bool(c.get("follow")));
+        }
         if (m.get("timeRange") instanceof Map<?, ?> tr) {
             try { rangeSpan = Integer.parseInt(str(tr.get("span"))); } catch (NumberFormatException ignored) { }
             String k = str(tr.get("kind"));
@@ -272,6 +324,27 @@ final class Settings {
         if (activeFile != null) sb.append("activeFile: ").append(q(activeFile.toString())).append('\n');
         sb.append(recentFiles.isEmpty() ? "\nrecentFiles: []\n" : "\nrecentFiles:\n");
         for (Path p : recentFiles) sb.append("  - ").append(q(p.toString())).append('\n');
+        sb.append(clusters.isEmpty() ? "\nclusters: []\n"
+                : "\n# Extras → Connect Settings (Zugangsdaten nur in der kubeconfig)\nclusters:\n");
+        for (Cluster c : clusters) {
+            sb.append("  - name: ").append(q(c.name())).append('\n');
+            sb.append("    tool: ").append(c.tool()).append('\n');
+            if (!c.toolPath().isBlank()) sb.append("    toolPath: ").append(q(c.toolPath())).append('\n');
+            if (!c.kubeconfig().isBlank()) sb.append("    kubeconfig: ").append(q(c.kubeconfig())).append('\n');
+            if (!c.context().isBlank()) sb.append("    context: ").append(q(c.context())).append('\n');
+            if (!c.namespace().isBlank()) sb.append("    namespace: ").append(q(c.namespace())).append('\n');
+        }
+        ConnectPrefs cp = connectPrefs;
+        sb.append("\nconnect:\n");
+        sb.append("  cluster: ").append(q(cp.cluster())).append('\n');
+        sb.append("  namespace: ").append(q(cp.namespace())).append('\n');
+        sb.append("  kind: ").append(q(cp.kind())).append('\n');
+        sb.append("  name: ").append(q(cp.name())).append('\n');
+        sb.append("  container: ").append(q(cp.container())).append('\n');
+        sb.append("  since: ").append(q(cp.since())).append('\n');
+        sb.append("  tailLines: ").append(cp.tailLines()).append('\n');
+        sb.append("  previous: ").append(cp.previous()).append('\n');
+        sb.append("  follow: ").append(cp.follow()).append('\n');
         sb.append(recent.isEmpty() ? "\nrecentSchemas: []\n" : "\nrecentSchemas:\n");
         for (RecentSchema r : recent) {
             sb.append("  - source: ").append(q(r.source().toString())).append('\n');

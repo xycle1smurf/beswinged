@@ -344,6 +344,9 @@ public final class JsonLogViewer extends JFrame {
         nav.add(item("Zum Ende", KeyEvent.VK_END, e -> selectRow(model.getRowCount() - 1)));
         JMenu extras = new JMenu("Extras");
         extras.add(item("Log-Generator…", 0, e -> showGenerator()));
+        extras.addSeparator();
+        extras.add(item("Connect…", KeyEvent.VK_K, e -> new ConnectDialog(this).setVisible(true)));
+        extras.add(item("Connect Settings…", 0, e -> new ConnectSettingsDialog(this).setVisible(true)));
         bar.add(file);
         bar.add(schemaMenu);
         bar.add(filterMenu);
@@ -1492,6 +1495,7 @@ public final class JsonLogViewer extends JFrame {
         int i = doc == null ? -1 : openFiles.indexOf(doc);
         if (doc != null) {
             closeDocIndex(doc);
+            Kube.stop(doc.path); // laufendes "logs -f" dieser Datei beenden
             openFiles.remove(doc);
             current = null; // Zustand der geschlossenen Datei nicht merken
         }
@@ -1510,6 +1514,7 @@ public final class JsonLogViewer extends JFrame {
 
     private void closeAll() {
         for (OpenFile f : openFiles) closeDocIndex(f);
+        Kube.stopAll();
         filterCancel.set(true);
         index = null;
     }
