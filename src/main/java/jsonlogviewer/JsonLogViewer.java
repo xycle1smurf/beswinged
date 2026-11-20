@@ -115,6 +115,15 @@ public final class JsonLogViewer extends JFrame {
     private final JTable table = new JTable();
     private final JTextArea detail = new JTextArea();
     private final JLabel detailHeader = new JLabel(" ");
+    /** Highlight-Filter rechts in der Trennleiste: markiert Regex-Treffer in der Detailansicht gelb. */
+    private final JTextField highlightField = new JTextField(18);
+    private final JLabel highlightCount = new JLabel();
+    private final List<int[]> highlightHits = new ArrayList<>();
+    private int highlightPos = -1;
+    private static final javax.swing.text.Highlighter.HighlightPainter HIGHLIGHT =
+            new javax.swing.text.DefaultHighlighter.DefaultHighlightPainter(new Color(0xFFEB3B));
+    private static final javax.swing.text.Highlighter.HighlightPainter HIGHLIGHT_CURRENT =
+            new javax.swing.text.DefaultHighlighter.DefaultHighlightPainter(new Color(0xFFA726));
     private final JTextField filterField = new JTextField(30);
     private final JComboBox<String> scopeBox = new JComboBox<>();
     private final List<Integer> scopeColumns = new ArrayList<>(); // Combo-Index-1 -> Schema-Spalte
@@ -235,8 +244,11 @@ public final class JsonLogViewer extends JFrame {
         detail.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 13));
         detail.setTabSize(4);
         JPanel detailPanel = new JPanel(new BorderLayout());
-        detailHeader.setBorder(BorderFactory.createEmptyBorder(3, 6, 3, 6));
-        detailPanel.add(detailHeader, BorderLayout.NORTH);
+        JPanel detailBar = new JPanel(new BorderLayout(8, 0));
+        detailBar.setBorder(BorderFactory.createEmptyBorder(3, 6, 3, 6));
+        detailBar.add(detailHeader, BorderLayout.CENTER);
+        detailBar.add(buildHighlightBar(), BorderLayout.EAST);
+        detailPanel.add(detailBar, BorderLayout.NORTH);
         detailPanel.add(new JScrollPane(detail), BorderLayout.CENTER);
 
         JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, new JScrollPane(table), detailPanel);
@@ -1909,6 +1921,7 @@ public final class JsonLogViewer extends JFrame {
             lastDetailKey = null;
             detail.setText("");
             detailHeader.setText(" ");
+            applyHighlight(false);
             return;
         }
         int lead = table.getColumnModel().getSelectionModel().getLeadSelectionIndex();
@@ -1930,6 +1943,107 @@ public final class JsonLogViewer extends JFrame {
         detail.setWrapStyleWord(true);
         detail.setText(d.body());
         detail.setCaretPosition(0);
+        applyHighlight(true);
+    }
+
+    // ------------------------------------------------------------------ Highlight-Filter
+
+    private JPanel buildHighlightBar() {
+        JPanel p = new JPanel(new BorderLayout(6, 0));
+        JLabel l = new JLabel("Highlight Filter:");
+        l.setLabelFor(highlightField);
+        highlightField.setToolTipText("<html>Regex, Groß-/Kleinschreibung egal. Alle Treffer werden in der Detailansicht gelb markiert.<br>"
+                + "Enter / Umschalt+Enter: nächster / vorheriger Treffer, Esc: leeren</html>");
+        highlightField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+            @Override public void insertUpdate(javax.swing.event.DocumentEvent e) { applyHighlight(true); }
+            @Override public void removeUpdate(javax.swing.event.DocumentEvent e) { applyHighlight(true); }
+            @Override public void changedUpdate(javax.swing.event.DocumentEvent e) { }
+        });
+        highlightField.addActionListener(e -> stepHighlight(1));
+        highlightField.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, java.awt.event.InputEvent.SHIFT_DOWN_MASK), "hlPrev");
+        highlightField.getActionMap().put("hlPrev", new javax.swing.AbstractAction() {
+            @Override public void actionPerformed(java.awt.event.ActionEvent e) { stepHighlight(-1); }
+        });
+        highlightField.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), "hlClear");
+        highlightField.getActionMap().put("hlClear", new javax.swing.AbstractAction() {
+            @Override public void actionPerformed(java.awt.event.ActionEvent e) { highlightField.setText(""); }
+        });
+        highlightCount.setForeground(Color.GRAY);
+        highlightCount.setPreferredSize(new Dimension(80, highlightCount.getPreferredSize().height));
+        p.add(l, BorderLayout.WEST);
+        p.add(highlightField, BorderLayout.CENTER);
+        p.add(highlightCount, BorderLayout.EAST);
+        return p;
+    }
+
+    /** Markiert alle Treffer des Highlight-Filters in der Detailansicht; {@code scroll}: zum ersten Treffer. */
+    private void applyHighlight(boolean scroll) {
+        javax.swing.text.Highlighter h = detail.getHighlighter();
+        h.removeAllHighlights();
+        highlightHits.clear();
+        highlightPos = -1;
+        highlightField.setBackground(UIManager.getColor("TextField.background"));
+        String q = highlightField.getText();
+        if (q.isEmpty()) {
+            highlightCount.setText("");
+            return;
+        }
+        Pattern pat;
+        try {
+            pat = Pattern.compile(q, Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE | Pattern.MULTILINE);
+        } catch (PatternSyntaxException ex) {
+            highlightField.setBackground(new Color(0xFFD6D6));
+            highlightCount.setText("ungültig");
+            return;
+        }
+        String text = detail.getText();
+        java.util.regex.Matcher m = pat.matcher(text);
+        while (m.find() && highlightHits.size() < 10_000) {
+            if (m.end() > m.start()) highlightHits.add(new int[]{m.start(), m.end()});
+            else if (m.end() >= text.length()) break; // leere Treffer (z.B. "a*") nicht markieren
+        }
+        for (int[] hit : highlightHits) {
+            try {
+                h.addHighlight(hit[0], hit[1], HIGHLIGHT);
+            } catch (javax.swing.text.BadLocationException ignored) {
+                // Text hat sich geändert
+            }
+        }
+        highlightCount.setText(highlightHits.isEmpty() ? "keine Treffer" : highlightHits.size() + " Treffer");
+        if (scroll && !highlightHits.isEmpty()) scrollToHit(highlightHits.get(0));
+    }
+
+    /** Springt zum nächsten/vorherigen Treffer und hebt ihn orange hervor. */
+    private void stepHighlight(int dir) {
+        if (highlightHits.isEmpty()) return;
+        int n = highlightHits.size();
+        highlightPos = highlightPos < 0 ? (dir > 0 ? 0 : n - 1) : Math.floorMod(highlightPos + dir, n);
+        javax.swing.text.Highlighter h = detail.getHighlighter();
+        h.removeAllHighlights();
+        for (int i = 0; i < n; i++) {
+            int[] hit = highlightHits.get(i);
+            try {
+                h.addHighlight(hit[0], hit[1], i == highlightPos ? HIGHLIGHT_CURRENT : HIGHLIGHT);
+            } catch (javax.swing.text.BadLocationException ignored) {
+                // Text hat sich geändert
+            }
+        }
+        highlightCount.setText((highlightPos + 1) + " / " + n);
+        scrollToHit(highlightHits.get(highlightPos));
+    }
+
+    private void scrollToHit(int[] hit) {
+        javax.swing.SwingUtilities.invokeLater(() -> {
+            try {
+                java.awt.geom.Rectangle2D a = detail.modelToView2D(hit[0]), b = detail.modelToView2D(hit[1]);
+                if (a == null || b == null) return;
+                java.awt.Rectangle r = a.getBounds().union(b.getBounds());
+                r.grow(0, 2 * r.height); // etwas Kontext ober- und unterhalb
+                detail.scrollRectToVisible(r);
+            } catch (javax.swing.text.BadLocationException ignored) {
+                // Text hat sich geändert
+            }
+        });
     }
 
     /** Inhalt der Detailansicht; {@code copy} ist der Wert für "Kopiere Zelle" (ohne Zusatz "Original"). */
