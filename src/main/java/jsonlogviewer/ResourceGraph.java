@@ -314,20 +314,25 @@ final class ResourceGraph extends JComponent {
         int ageW = age.isEmpty() ? 0 : fi.stringWidth(age) + 8;
         g.setFont(NAME_FONT);
         g.setColor(TEXT);
-        g.drawString(ellipsize(r.name, g.getFontMetrics(), right - tx - ageW), tx, b.y + 23);
+        FontMetrics fn = g.getFontMetrics();
+        String[] name = splitName(r.name, fn, right - tx - ageW, right - tx);
+        int nameY = name.length == 1 ? b.y + 23 : b.y + 17;
+        g.drawString(name[0], tx, nameY);
+        if (name.length > 1) g.drawString(name[1], tx, nameY + 14);
         g.setFont(INFO_FONT);
         if (!age.isEmpty()) {
             g.setColor(GREY);
-            g.drawString(age, right - fi.stringWidth(age), b.y + 22);
+            g.drawString(age, right - fi.stringWidth(age), nameY - 1);
         }
+        int infoY = name.length == 1 ? b.y + 43 : b.y + 48;
         int ix = tx;
         if (r.health != null) {
-            paintHealth(g, r.health, ix + 6, b.y + 39, 6);
+            paintHealth(g, r.health, ix + 6, infoY - 4, 6);
             ix += 16;
         }
         g.setColor(GREY);
         String line = r.kind + (r.info.isEmpty() ? "" : "  ·  " + r.info);
-        g.drawString(ellipsize(line, fi, right - ix), ix, b.y + 43);
+        g.drawString(ellipsize(line, fi, right - ix), ix, infoY);
         g.dispose();
     }
 
@@ -420,6 +425,25 @@ final class ResourceGraph extends JComponent {
         if (r.created != null) sb.append("<br>Erstellt: ").append(r.created).append(" (").append(KubeResources.age(r.created)).append(')');
         if (!r.isRoot()) sb.append("<br><i>Doppelklick: Manifest, Rechtsklick: Menü</i>");
         return sb.append("</html>").toString();
+    }
+
+    /**
+     * Teilt einen zu langen Namen auf zwei Zeilen: bevorzugt nach dem letzten Zeichen außerhalb von [a-zA-Z0-9]
+     * (z.B. '-', '.', '_'), das noch in die erste Zeile passt; sonst hart an der Breite. Die zweite Zeile wird
+     * bei Bedarf mit "…" gekürzt.
+     */
+    static String[] splitName(String s, FontMetrics fm, int width1, int width2) {
+        if (fm.stringWidth(s) <= width1) return new String[]{s};
+        int fit = 0; // Anzahl Zeichen, die in die erste Zeile passen
+        while (fit < s.length() && fm.stringWidth(s.substring(0, fit + 1)) <= width1) fit++;
+        if (fit == 0) return new String[]{ellipsize(s, fm, width1)};
+        int cut = fit;
+        for (int i = fit - 1; i > 0; i--) {
+            char ch = s.charAt(i);
+            if (!(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9')) { cut = i + 1; break; }
+        }
+        if (cut < fit / 3) cut = fit; // Trennzeichen ganz vorn: lieber die erste Zeile füllen
+        return new String[]{s.substring(0, cut), ellipsize(s.substring(cut), fm, width2)};
     }
 
     private static String wrap(String s) {

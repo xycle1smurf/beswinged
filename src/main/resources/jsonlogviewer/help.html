@@ -140,6 +140,12 @@ rotes gebrochenes Herz = Degraded, Pause = Suspended. Filter nach Name, Zustand 
 <li>Doppelklick auf eine Kachel öffnet ein eigenes Fenster mit Manifest (YAML, Suche mit Strg+F), Zusammenfassung und Events.
 Es können beliebig viele offen sein. Werte von Secrets sind verdeckt, bis <i>Werte anzeigen</i> gewählt wird.
 Rechtsklick &rarr; <i>Logs…</i> öffnet Connect mit dem Objekt.</li>
+<li>Rechtsklick &rarr; <i>Bearbeiten…</i> öffnet das Manifest im Editor. <i>XML</i> zeigt es als XML: Die Struktur steckt in den
+Elementen, nicht in der Einrückung; <i>Einrücken</i> (Strg+Umschalt+F) rückt anhand der Elemente neu ein.
+<i>Speichern</i> (Strg+S) wandelt immer zurück in YAML und speichert mit <code>kubectl replace</code>.
+Wurde das Objekt inzwischen geändert, lehnt der Cluster ab: <i>Neu laden</i> und erneut ändern.</li>
+<li>Rechtsklick &rarr; <i>Löschen…</i>: abhängige Objekte (<code>--cascade</code> foreground, background oder orphan),
+Wartezeit (<code>--grace-period</code>, <code>--now</code>), <i>Erzwingen</i> (<code>--force</code>). Zur Bestätigung den Namen eingeben.</li>
 </ul>
 
 <a name="einstellungen"></a><h2>Einstellungen</h2>

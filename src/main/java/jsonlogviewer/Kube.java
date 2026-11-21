@@ -139,6 +139,35 @@ final class Kube {
         return run(cmd("get", kind.toLowerCase(java.util.Locale.ROOT), name, "-n", namespace, "-o", "json"));
     }
 
+    /** Ressourcentyp für kubectl, mit API-Gruppe eindeutig: {@code deployment.apps}, {@code configmap}. */
+    static String type(String kind, Map<String, Object> obj) {
+        String api = str(path(obj, "apiVersion"));
+        String t = kind.toLowerCase(java.util.Locale.ROOT);
+        int slash = api.indexOf('/');
+        return slash > 0 ? t + "." + api.substring(0, slash) : t;
+    }
+
+    /** {@code replace -f -}: ersetzt das Objekt durch das Manifest (YAML oder JSON); resourceVersion schützt vor Überschreiben. */
+    String replace(String manifest, String namespace) throws IOException {
+        return run(cmd("replace", "-n", namespace, "-f", "-"), manifest);
+    }
+
+    /**
+     * Befehl für {@code delete}.
+     * @param cascade     background, foreground oder orphan
+     * @param gracePeriod Sekunden, oder -1 für den Standard des Objekts
+     * @param now         {@code --now} (statt gracePeriod)
+     * @param force       {@code --force} (setzt --grace-period=0)
+     */
+    List<String> deleteCommand(String type, String name, String namespace, String cascade, int gracePeriod, boolean now, boolean force) {
+        List<String> c = cmd("delete", type, name, "-n", namespace, "--cascade=" + cascade);
+        if (force) { c.add("--force"); c.add("--grace-period=0"); }
+        else if (now) c.add("--now");
+        else if (gracePeriod >= 0) c.add("--grace-period=" + gracePeriod);
+        c.add("--wait=false");
+        return c;
+    }
+
     /** Events zu einem Objekt (nach UID). */
     String eventsJson(String namespace, String uid) throws IOException {
         return run(cmd("get", "events", "-n", namespace, "--field-selector", "involvedObject.uid=" + uid, "-o", "json"));
@@ -258,13 +287,29 @@ final class Kube {
 
     /** Führt den Befehl aus und liefert stdout; bei Fehler IOException mit stderr. */
     static String run(List<String> cmd) throws IOException {
+        return run(cmd, null);
+    }
+
+    /** Wie {@link #run(List)}, schreibt aber {@code input} (UTF-8) auf stdin. */
+    static String run(List<String> cmd, String input) throws IOException {
         ProcessBuilder pb = new ProcessBuilder(cmd);
-        pb.redirectInput(ProcessBuilder.Redirect.from(nullFile()));
+        if (input == null) pb.redirectInput(ProcessBuilder.Redirect.from(nullFile()));
         Process p;
         try {
             p = pb.start();
         } catch (IOException ex) {
             throw notFound(cmd.get(0), ex);
+        }
+        if (input != null) {
+            Thread w = new Thread(() -> {
+                try (var os = p.getOutputStream()) {
+                    os.write(input.getBytes(StandardCharsets.UTF_8));
+                } catch (IOException ignored) {
+                    // Prozess hat stdin vorzeitig geschlossen; die Fehlermeldung kommt über stderr
+                }
+            }, "kube-stdin");
+            w.setDaemon(true);
+            w.start();
         }
         ByteArrayOutputStream out = new ByteArrayOutputStream(), err = new ByteArrayOutputStream();
         Thread to = pump(p.getInputStream(), out), te = pump(p.getErrorStream(), err);

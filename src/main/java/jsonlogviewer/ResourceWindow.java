@@ -108,7 +108,15 @@ final class ResourceWindow extends JFrame {
         copy.addActionListener(e -> Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(yaml.getText()), null));
         JButton save = new JButton("Speichern unter…");
         save.addActionListener(e -> save());
+        JButton edit = new JButton("Bearbeiten…");
+        edit.setToolTipText("Im Editor öffnen (YAML oder XML) und mit kubectl replace speichern");
+        edit.addActionListener(e -> {
+            EditWindow w = new EditWindow(cluster, namespace, res, this::reload);
+            w.setLocationRelativeTo(this);
+            w.setVisible(true);
+        });
         bar.add(reload);
+        bar.add(edit);
         bar.add(copy);
         bar.add(save);
         if (res.kind.equals("Secret")) {

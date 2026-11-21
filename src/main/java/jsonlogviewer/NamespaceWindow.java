@@ -387,6 +387,13 @@ final class NamespaceWindow extends JFrame {
                 logs.addActionListener(a -> openLogs(r));
                 m.add(logs);
             }
+            JMenuItem edit = new JMenuItem("Bearbeiten…");
+            edit.addActionListener(a -> editResource(r));
+            m.add(edit);
+            JMenuItem del = new JMenuItem("Löschen…");
+            del.addActionListener(a -> deleteResource(r));
+            m.add(del);
+            m.addSeparator();
             JMenuItem copy = new JMenuItem("Name kopieren");
             copy.addActionListener(a -> Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(r.name), null));
             m.add(copy);
@@ -403,6 +410,24 @@ final class NamespaceWindow extends JFrame {
         fit.addActionListener(a -> graph.fit());
         m.add(fit);
         m.show(graph, e.getX(), e.getY());
+    }
+
+    private void editResource(Res r) {
+        Settings.Cluster c = currentCluster();
+        if (c == null || snapshot == null) return;
+        EditWindow w = new EditWindow(c, snapshot.root().name, r, () -> load(false));
+        w.setLocationRelativeTo(this);
+        w.setVisible(true);
+    }
+
+    private void deleteResource(Res r) {
+        Settings.Cluster c = currentCluster();
+        if (c == null || snapshot == null) return;
+        String ns = snapshot.root().name;
+        new DeleteDialog(this, c, ns, r, () -> {
+            setStatus(r.kind + " " + r.name + " wird gelöscht …", false);
+            load(true);
+        }).setVisible(true);
     }
 
     private void openLogs(Res r) {
