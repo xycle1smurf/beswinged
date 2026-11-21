@@ -49,7 +49,7 @@ case "$OS" in
 esac
 
 # Laufzeit nur mit den benötigten Modulen (siehe: jdeps --print-module-deps target/beswinged.jar)
-jlink --add-modules java.base,java.desktop \
+jlink --add-modules java.base,java.desktop,java.xml \
       --strip-debug --no-header-files --no-man-pages --compress=zip-6 \
       --output target/runtime
 

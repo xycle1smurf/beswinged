@@ -69,9 +69,14 @@ Ohne Schema werden die Spalten automatisch aus den Top-Level-Feldern der ersten 
 | Auswahlfilter | Zweite Filterzeile: Dropdown mit allen vorkommenden Werten einer Spalte. Tippen sucht, Enter/Leertaste/Klick wählt an oder ab, mehrere Werte möglich. Wird beim Schließen angewendet. Bei Paket-/Klassennamen (z.B. Logger) erscheinen zusätzlich die gemeinsamen Pakete hierarchisch eingerückt, z.B. `org.example.*  (12)`: Auswahl trifft alle Werte darunter. Gespeicherte Filter merken sich solche Paket-Einträge ebenfalls |
 | Loglevel-Filter | Bei Spalten vom Typ Loglevel: „≥ WARN“ zeigt WARN, ERROR und FATAL. Kennt Log4j, Logback und JUL (FINEST … SEVERE) |
 | Detailansicht | Klick auf `#`: ganze Zeile als formatiertes JSON. Klick auf eine andere Zelle: nur deren Wert, `\n` als echter Zeilenumbruch, `\uXXXX` als Zeichen |
+| Highlight Filter | Feld rechts in der Leiste über der Detailansicht: Regex (Groß-/Kleinschreibung egal), alle Treffer im Text darunter werden gelb markiert, die Anzahl steht daneben. Enter / Umschalt+Enter springt zum nächsten / vorherigen Treffer (orange), Esc leert. Bleibt beim Wechsel der Zeile aktiv; ungültige Regex färbt das Feld rot |
 | Ansicht | Spalten ein-/ausblenden, *Zeitzone* für alle Zeitstempel-Spalten |
 | Spaltenköpfe | Per Drag & Drop umsortieren. Rechtsklick: *Ausblenden*, *Zeitzone* (bei Zeitstempeln), *Package original / compact / Class only* (bei Klassennamen), *Auswahlfilter*, *Spaltentyp Loglevel* |
 | Extras → Log-Generator | Erzeugt ein Beispiel-Log mit wählbarer Zeilenzahl und wählbarem Zeitabstand. Entweder im Logstash-Format oder passend zu einem Schema: Jeder Spaltenpfad wird anhand seines Namens befüllt |
+| Extras → Connect… (Strg+K) | Holt das Log aus Kubernetes oder OpenShift mit `kubectl` bzw. `oc`: Cluster, Namespace, Art (Pod, Deployment, ReplicaSet, StatefulSet, DaemonSet, DeploymentConfig), Name und optional Container. *Laden* listet Namespaces bzw. Pods/Workloads mit Status und Containern. Bei Workloads werden alle Pods über deren Label-Selector gelesen. Optional *Seit* (`--since`), *Letzte Zeilen* (`--tail`), *Vorheriger Container* (`--previous`). Der Befehl wird vorab angezeigt. Das Log landet in `~/.beswinged/kube/<Cluster>_<Namespace>_<Name>.jsonl` und wird geöffnet. Mit *Folgen* läuft `logs -f` weiter und Tail ist an; *Datei → Schließen* oder Programmende beendet es |
+| Extras → Show Namespace… | Eigenes Fenster mit allen Objekten eines Namespaces als Kacheln, angelehnt an die Baumansicht von Argo CD: links der Namespace, daneben Deployments, StatefulSets, DaemonSets, CronJobs, Services, Ingresses/Routes, PVCs, ConfigMaps, Secrets usw., Kinder (ReplicaSet → Pod, CronJob → Job → Pod, Service → Endpoints) jeweils eine Spalte weiter. Jede Kachel zeigt Zustand (Healthy, Progressing, Degraded, Suspended – Regeln wie in Argo CD), Kurzinfo (z.B. `rev:3 1/2 bereit`, `crashloopbackoff 0/1 ↻ 7`) und Alter. Filter nach Name, Zustand und Art; Systemobjekte und alte ReplicaSets sind ausgeblendet. Strg+Mausrad zoomt, Ziehen verschiebt, *Auto* lädt alle 10 s neu. Doppelklick öffnet ein Fenster mit **Manifest (YAML)**, Zusammenfassung und Events – nicht modal, beliebig viele gleichzeitig. Werte von Secrets sind verdeckt, bis *Werte anzeigen* gewählt wird. Rechtsklick → *Logs…* öffnet Connect vorbelegt. Rechtsklick → *Bearbeiten…* öffnet einen Editor mit YAML- und XML-Ansicht (XML: Struktur über Elemente statt Einrückung, *Einrücken* formatiert neu); gespeichert wird immer als YAML mit `kubectl replace`, die resourceVersion verhindert das Überschreiben fremder Änderungen. Rechtsklick → *Löschen…* bietet `--cascade` (foreground/background/orphan), `--grace-period`, `--now` und `--force` und verlangt zur Bestätigung den Namen wie Argo CD. Lange Namen werden auf zwei Zeilen umbrochen, bevorzugt an `-`, `.` oder `_`. Mehrere Namespace-Fenster sind möglich. Ohne Argo CD gibt es keinen Sync-Status (Abgleich mit Git) |
+| Extras → Connect Settings… | Cluster verwalten: Name, Werkzeug (`kubectl`/`oc`), optional Programmpfad, kubeconfig-Datei, Kontext (*Laden* listet die Kontexte), Standard-Namespace. *Aus kubeconfig importieren* legt je Kontext einen Eintrag an, *Verbindung testen* zeigt Server-Version und ob Logs gelesen werden dürfen. **Zugangsdaten speichert beswinged nicht**; angemeldet wird wie gewohnt (`oc login`, `az aks get-credentials`, …), das füllt die kubeconfig |
+| Datei → Log einfügen… (Strg+Umschalt+V) | Fenster mit Textfeld für einen Log-Ausschnitt aus der Zwischenablage (z.B. aus Teams, einer Mail oder einem Ticket); beim Öffnen ist der Inhalt der Zwischenablage schon eingefügt. *Anzeigen* (Strg+Enter) öffnet den Text wie eine Datei; erneutes *Anzeigen* aktualisiert sie. *Reparieren* fügt über mehrere Zeilen verteilte JSON-Objekte zusammen und korrigiert geschützte Leerzeichen, unsichtbare Zeichen und typografische Anführungszeichen. Der Text wird unter `~/.beswinged/paste/` abgelegt (nach 14 Tagen gelöscht, sofern nicht geöffnet) |
 | Strg+O / Strg+L / F5 | Log öffnen / Schema laden / Neu laden (Dateiauswahl filtert wahlweise `*.json`/`*.jsonl` oder `*.log`). Neu laden behält Filter und Auswahl |
 | Menü Fenster | Alle geöffneten Logdateien (RAM oder Seek) in Öffnungsreihenfolge, die zuletzt geöffnete unten. Strg+1 … Strg+9 wechselt. Jede Datei behält ihr Schema, ihre Filter, ihren Zeitraum und die ausgewählte Zeile. Eine bereits offene Datei erneut zu öffnen wechselt nur zu ihr |
 | Datei → Schließen (Strg+W) | Schließt die angezeigte Datei und entfernt sie aus *Fenster*. Angezeigt wird dann die Datei davor, sonst die danach, sonst ein leeres Fenster |
@@ -99,6 +104,31 @@ Sommer- bzw. Winterzeit. Zeitstempel ohne Offset gelten als UTC.
 
 Zeilen, die kein gültiges JSON sind, werden lila hinterlegt, mit dem Rohtext in der ersten Spalte.
 Leere Zeilen werden übersprungen. Die Zeilennummer `#` zählt nur nicht-leere Zeilen.
+
+## Text-Logs (kein JSON)
+
+Beginnt die Mehrheit der Zeilen nicht mit `{`, wird das Format anhand der ersten Zeilen erkannt
+und jeder Eintrag in Felder zerlegt, als wäre er JSON gewesen (Feldnamen wie beim
+logstash-logback-encoder: `@timestamp`, `level`, `thread_name`, `logger_name`, `message`, `stack_trace`).
+Stacktraces und andere Folgezeilen werden dem vorherigen Eintrag zugeordnet.
+
+Eingebaut: Spring Boot 2/3, Logback, Log4j/Log4j2 (auch WildFly/JBoss), java.util.logging,
+klog (Kubernetes), logfmt und als Rückfall *Text (allgemein)*. Das gilt für Dateien wie für
+`kubectl logs`/`oc logs`.
+
+*Schema → Logformat* zeigt das erkannte Format und erlaubt, es je Datei festzulegen.
+*Schema → Import → logback.xml… / log4j2.xml…* liest eine Konfiguration ein, listet ihre Appender
+mit Muster (auch `${…}`-Properties und die Spring-Boot-Standardmuster), testet das gewählte Muster
+an der geöffneten Datei und legt es als eigenes Format ab. *Muster eingeben…* nimmt ein
+PatternLayout direkt entgegen. Eigene Muster stehen in `settings.yaml` unter `logFormats`.
+
+### Eigene Konverter
+
+Ein Konverter implementiert `jsonlogviewer.format.LogFormat` (oder erbt von `AbstractLogFormat`,
+die Stacktraces und Folgezeilen schon behandelt). Vorlage: `jsonlogviewer.format.example.ExampleFormat`.
+Die Klasse wird in `META-INF/services/jsonlogviewer.format.LogFormat` eingetragen und als JAR nach
+`~/.beswinged/formats/` gelegt oder auf den Classpath gesetzt
+(`java -cp beswinged.jar:meinformat.jar jsonlogviewer.JsonLogViewer`, unter Windows `;` statt `:`).
 
 ## Schema
 
@@ -140,6 +170,9 @@ Alles Benutzerbezogene liegt in `~/.beswinged/` (unter Windows `%USERPROFILE%\.b
   Beim Start werden die offenen Dateien wiederhergestellt; eingelesen wird zunächst nur die aktive, die übrigen beim ersten Anzeigen
 - `schemas/`: Kopien der zuletzt geöffneten Schemas (Cache)
 - `filters/`: gespeicherte Filter, je Datei ein Filter
+- `paste/`: mit *Datei → Log einfügen* angezeigte Texte.
+- `kube/`: mit *Extras → Connect* geholte Logs (und je eine `.err.txt` mit der Fehlerausgabe von kubectl/oc).
+  Die Cluster stehen in `settings.yaml` unter `clusters`, die letzten Eingaben des Connect-Dialogs unter `connect`
 
 Mit `-Dbeswinged.home=<Ordner>` lässt sich ein anderes Verzeichnis verwenden.
 

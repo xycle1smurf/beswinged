@@ -19,11 +19,13 @@ th { text-align: left; background-color: #E6EDF6; }
 <a href="#start">Erste Schritte</a> &middot;
 <a href="#laden">Große Dateien</a> &middot;
 <a href="#spalten">Spalten &amp; Schema</a> &middot;
+<a href="#text">Text-Logs</a> &middot;
 <a href="#filter">Filter</a> &middot;
 <a href="#zeitraum">Zeitraum</a> &middot;
 <a href="#tabelle">Tabelle &amp; Kopieren</a> &middot;
 <a href="#tail">Tail</a> &middot;
 <a href="#fenster">Mehrere Dateien</a> &middot;
+<a href="#kube">Kubernetes</a> &middot;
 <a href="#einstellungen">Einstellungen</a> &middot;
 <a href="#tasten">Tastenkürzel</a> &middot;
 <a href="#grenzen">Grenzen</a>
@@ -36,6 +38,9 @@ th { text-align: left; background-color: #E6EDF6; }
 Ohne Schema werden die Spalten aus den Feldern der ersten 200 Zeilen erkannt.</li>
 <li>Ein Klick auf eine Zeile zeigt unten die <b>Detailansicht</b>: Klick auf <code>#</code> zeigt die ganze Zeile als formatiertes JSON,
 Klick auf eine andere Zelle nur deren Wert mit echten Zeilenumbrüchen.</li>
+<li><b>Log einfügen</b>: <i>Datei &rarr; Log einfügen…</i> (Strg+Umschalt+V) öffnet ein Textfeld mit dem Inhalt der Zwischenablage,
+z.B. einem Log-Ausschnitt aus Teams. <i>Anzeigen</i> (Strg+Enter) zeigt ihn wie eine Datei. <i>Reparieren</i> fügt umbrochene
+JSON-Objekte zusammen und korrigiert Zeichen, die beim Kopieren entstehen (geschützte Leerzeichen, &bdquo;typografische&ldquo; Anführungszeichen).</li>
 <li>Kommandozeile: <code>beswinged app.log --schema schema.yaml [--ram|--seek] [--tail]</code></li>
 </ul>
 
@@ -58,6 +63,17 @@ Die Tabelle ist schon während des Einlesens bedienbar.</p>
 <li>Änderungen werden automatisch in die geladene Schema-Datei zurückgeschrieben.
 Das automatisch erkannte Schema lässt sich mit <i>Schema &rarr; Schema speichern unter…</i> (Strg+S) ablegen.</li>
 <li>Das Menü <i>Schema</i> zeigt die 20 zuletzt geöffneten Schemas.</li>
+</ul>
+
+<a name="text"></a><h2>Text-Logs</h2>
+<ul>
+<li>Logs, die nicht mit <code>{</code> beginnen, werden automatisch erkannt (Spring Boot, Logback, Log4j, java.util.logging,
+klog, logfmt, sonst <i>Text</i>) und in Spalten wie <code>@timestamp</code>, <code>level</code>, <code>logger_name</code>,
+<code>message</code>, <code>stack_trace</code> zerlegt. Stacktraces gehören zum vorherigen Eintrag.</li>
+<li><i>Schema &rarr; Logformat</i> zeigt das erkannte Format und legt es für die Datei fest.</li>
+<li><i>Schema &rarr; Import &rarr; logback.xml… / log4j2.xml…</i>: Konfiguration wählen, Appender auswählen,
+Muster prüfen (Vorschau und Trefferquote), <i>Übernehmen</i>. <i>Muster eingeben…</i> nimmt ein PatternLayout direkt.</li>
+<li>Eigene Konverter (Interface <code>jsonlogviewer.format.LogFormat</code>) als JAR nach <code>~/.beswinged/formats/</code> legen.</li>
 </ul>
 
 <a name="filter"></a><h2>Filter</h2>
@@ -91,6 +107,9 @@ Ein leeres Feld lässt die Seite offen.</li>
 mehrzeilige Werte (Stacktraces, JSON) als Codeblock.</li>
 <li>Rohzeile(n) oder Zellen (Tab-getrennt) kopieren.</li>
 </ul>
+<p><b>Highlight Filter</b> (rechts über der Detailansicht): Regex, Groß-/Kleinschreibung egal. Alle Treffer im Text
+darunter werden gelb markiert. Enter bzw. Umschalt+Enter springt zum nächsten bzw. vorherigen Treffer, Esc leert das Feld.
+Der Filter bleibt beim Wechsel der Zeile aktiv und blendet nichts aus.</p>
 <p>Ungültige JSON-Zeilen sind lila hinterlegt. Die Zeilennummer <code>#</code> zählt nur nicht-leere Zeilen.</p>
 
 <a name="tail"></a><h2>Tail</h2>
@@ -103,6 +122,30 @@ Aktive Filter werden fortgeschrieben; steht die Ansicht am Ende, scrollt sie mit
 Jede Datei behält Schema, Filter, Zeitraum und Auswahl.</li>
 <li><i>Datei &rarr; Schließen</i> (Strg+W) schließt die angezeigte Datei; danach wird die Datei davor angezeigt.</li>
 <li>Beim nächsten Start sind alle Dateien wieder da.</li>
+</ul>
+
+<a name="kube"></a><h2>Kubernetes / OpenShift</h2>
+<ul>
+<li><i>Extras &rarr; Connect Settings…</i>: Cluster anlegen (Werkzeug <code>kubectl</code> oder <code>oc</code>, kubeconfig, Kontext,
+Standard-Namespace). <i>Aus kubeconfig importieren</i> legt je Kontext einen Eintrag an, <i>Verbindung testen</i> prüft den Zugriff.
+Passwörter und Tokens speichert beswinged nicht: Angemeldet wird wie gewohnt, z.B. mit <code>oc login</code>.</li>
+<li><i>Extras &rarr; Connect…</i> (Strg+K): Cluster, Namespace, Art (Pod oder Deployment, ReplicaSet, StatefulSet, DaemonSet,
+DeploymentConfig) und Name wählen; <i>Laden</i> listet die vorhandenen mit Status. Bei Workloads werden alle Pods gelesen.</li>
+<li><i>Seit</i>, <i>Letzte Zeilen</i> und <i>Vorheriger Container</i> begrenzen das Log. Mit <i>Folgen</i> kommen neue Zeilen laufend
+hinzu (Tail); <i>Datei &rarr; Schließen</i> beendet die Verbindung.</li>
+<li><i>Extras &rarr; Show Namespace…</i>: eigenes Fenster mit allen Objekten eines Namespaces als Kacheln, ähnlich Argo CD.
+Kinder (ReplicaSet, Pod, Job, Endpoints) stehen rechts neben ihrem Besitzer. Symbole: grünes Herz = Healthy, blauer Kreis = Progressing,
+rotes gebrochenes Herz = Degraded, Pause = Suspended. Filter nach Name, Zustand und Art; Strg+Mausrad zoomt, Ziehen verschiebt,
+<i>Auto</i> lädt alle 10&nbsp;s neu.</li>
+<li>Doppelklick auf eine Kachel öffnet ein eigenes Fenster mit Manifest (YAML, Suche mit Strg+F), Zusammenfassung und Events.
+Es können beliebig viele offen sein. Werte von Secrets sind verdeckt, bis <i>Werte anzeigen</i> gewählt wird.
+Rechtsklick &rarr; <i>Logs…</i> öffnet Connect mit dem Objekt.</li>
+<li>Rechtsklick &rarr; <i>Bearbeiten…</i> öffnet das Manifest im Editor. <i>XML</i> zeigt es als XML: Die Struktur steckt in den
+Elementen, nicht in der Einrückung; <i>Einrücken</i> (Strg+Umschalt+F) rückt anhand der Elemente neu ein.
+<i>Speichern</i> (Strg+S) wandelt immer zurück in YAML und speichert mit <code>kubectl replace</code>.
+Wurde das Objekt inzwischen geändert, lehnt der Cluster ab: <i>Neu laden</i> und erneut ändern.</li>
+<li>Rechtsklick &rarr; <i>Löschen…</i>: abhängige Objekte (<code>--cascade</code> foreground, background oder orphan),
+Wartezeit (<code>--grace-period</code>, <code>--now</code>), <i>Erzwingen</i> (<code>--force</code>). Zur Bestätigung den Namen eingeben.</li>
 </ul>
 
 <a name="einstellungen"></a><h2>Einstellungen</h2>
@@ -123,6 +166,8 @@ Jede Datei behält Schema, Filter, Zeitraum und Auswahl.</li>
 <tr><td>Strg+G</td><td>Gehe zu Zeile</td></tr>
 <tr><td>Strg+Pos1 / Strg+Ende</td><td>Zum Anfang / Zum Ende</td></tr>
 <tr><td>Strg+1 … Strg+9</td><td>Zur Datei im Menü Fenster</td></tr>
+<tr><td>Strg+Umschalt+V</td><td>Log einfügen</td></tr>
+<tr><td>Strg+K</td><td>Connect (Kubernetes/OpenShift)</td></tr>
 <tr><td>F1</td><td>Diese Hilfe</td></tr>
 </table>
 

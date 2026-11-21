@@ -49,6 +49,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
+import jsonlogviewer.format.LogFormat;
+import jsonlogviewer.format.LogFormats;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 import javax.swing.AbstractAction;
@@ -115,6 +117,15 @@ public final class JsonLogViewer extends JFrame {
     private final JTable table = new JTable();
     private final JTextArea detail = new JTextArea();
     private final JLabel detailHeader = new JLabel(" ");
+    /** Highlight-Filter rechts in der Trennleiste: markiert Regex-Treffer in der Detailansicht gelb. */
+    private final JTextField highlightField = new JTextField(18);
+    private final JLabel highlightCount = new JLabel();
+    private final List<int[]> highlightHits = new ArrayList<>();
+    private int highlightPos = -1;
+    private static final javax.swing.text.Highlighter.HighlightPainter HIGHLIGHT =
+            new javax.swing.text.DefaultHighlighter.DefaultHighlightPainter(new Color(0xFFEB3B));
+    private static final javax.swing.text.Highlighter.HighlightPainter HIGHLIGHT_CURRENT =
+            new javax.swing.text.DefaultHighlighter.DefaultHighlightPainter(new Color(0xFFA726));
     private final JTextField filterField = new JTextField(30);
     private final JComboBox<String> scopeBox = new JComboBox<>();
     private final List<Integer> scopeColumns = new ArrayList<>(); // Combo-Index-1 -> Schema-Spalte
@@ -177,6 +188,7 @@ public final class JsonLogViewer extends JFrame {
         saveTimer.setRepeats(false);
 
         setIconImages(HelpMenu.icons());
+        initFormats();
         buildMenu();
         JPanel north = new JPanel(new BorderLayout());
         north.add(buildToolbar(), BorderLayout.NORTH);
@@ -235,8 +247,11 @@ public final class JsonLogViewer extends JFrame {
         detail.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 13));
         detail.setTabSize(4);
         JPanel detailPanel = new JPanel(new BorderLayout());
-        detailHeader.setBorder(BorderFactory.createEmptyBorder(3, 6, 3, 6));
-        detailPanel.add(detailHeader, BorderLayout.NORTH);
+        JPanel detailBar = new JPanel(new BorderLayout(8, 0));
+        detailBar.setBorder(BorderFactory.createEmptyBorder(3, 6, 3, 6));
+        detailBar.add(detailHeader, BorderLayout.CENTER);
+        detailBar.add(buildHighlightBar(), BorderLayout.EAST);
+        detailPanel.add(detailBar, BorderLayout.NORTH);
         detailPanel.add(new JScrollPane(detail), BorderLayout.CENTER);
 
         JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, new JScrollPane(table), detailPanel);
@@ -290,6 +305,10 @@ public final class JsonLogViewer extends JFrame {
             @Override public void menuCanceled(MenuEvent e) { }
         });
         file.add(recentFiles);
+        JMenuItem pasteItem = item("Log einfügen…", 0, e -> new PasteWindow(this).setVisible(true));
+        pasteItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_V, Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx() | KeyEvent.SHIFT_DOWN_MASK));
+        pasteItem.setToolTipText("Log-Ausschnitt aus der Zwischenablage (z.B. aus Teams) anzeigen");
+        file.add(pasteItem);
         file.add(item("Schließen", KeyEvent.VK_W, e -> closeCurrent(true)));
         file.addSeparator();
         file.add(item("Neu laden", KeyEvent.VK_F5, e -> reload()));
@@ -332,6 +351,10 @@ public final class JsonLogViewer extends JFrame {
         nav.add(item("Zum Ende", KeyEvent.VK_END, e -> selectRow(model.getRowCount() - 1)));
         JMenu extras = new JMenu("Extras");
         extras.add(item("Log-Generator…", 0, e -> showGenerator()));
+        extras.addSeparator();
+        extras.add(item("Connect…", KeyEvent.VK_K, e -> new ConnectDialog(this).setVisible(true)));
+        extras.add(item("Show Namespace…", 0, e -> new NamespaceWindow(this).setVisible(true)));
+        extras.add(item("Connect Settings…", 0, e -> new ConnectSettingsDialog(this).setVisible(true)));
         bar.add(file);
         bar.add(schemaMenu);
         bar.add(filterMenu);
@@ -692,7 +715,7 @@ public final class JsonLogViewer extends JFrame {
                 idx.scan(0, idx.lineCount(), (line, s) -> {
                     if ((line & 0xFFF) == 0 && cancel.get()) return false;
                     Object root;
-                    try { root = Json.parse(s); } catch (RuntimeException ex) { return true; }
+                    try { root = idx.parse(s); } catch (RuntimeException ex) { return true; }
                     for (int i = 0; i < cols.length; i++) {
                         String v = LogTableModel.displayValue(cols[i], root, s);
                         if (sets.get(i).size() < DISTINCT_LIMIT) sets.get(i).add(v);
@@ -748,7 +771,7 @@ public final class JsonLogViewer extends JFrame {
         int nonEmpty = 0, ts = 0, cls = 0;
         for (int i = 0; i < n; i++) {
             try {
-                Object v = Json.get(Json.parse(index.readLine(i)), model.column(k).segments());
+                Object v = Json.get(index.parse(index.readLine(i)), model.column(k).segments());
                 if (v == null) continue;
                 nonEmpty++;
                 if (v instanceof String s) {
@@ -811,6 +834,13 @@ public final class JsonLogViewer extends JFrame {
         }));
         menu.add(item("Schema speichern unter…", KeyEvent.VK_S, e -> saveSchemaAs()));
         menu.addSeparator();
+        menu.add(formatMenu());
+        JMenu imp = new JMenu("Import");
+        imp.add(item("logback.xml…", 0, e -> importPattern(PatternImportDialog.Source.LOGBACK)));
+        imp.add(item("log4j2.xml…", 0, e -> importPattern(PatternImportDialog.Source.LOG4J2)));
+        imp.add(item("Muster eingeben…", 0, e -> importPattern(PatternImportDialog.Source.MANUAL)));
+        menu.add(imp);
+        menu.addSeparator();
         List<Settings.RecentSchema> recent = Settings.get().recentSchemas();
         if (recent.isEmpty()) {
             JMenuItem none = new JMenuItem("(noch keine Schemas geöffnet)");
@@ -837,6 +867,115 @@ public final class JsonLogViewer extends JFrame {
         if (!recent.isEmpty()) {
             menu.addSeparator();
             menu.add(item("Liste leeren", 0, e -> Settings.get().clearRecent()));
+        }
+    }
+
+    // ------------------------------------------------------------------ Logformat
+
+    /** Eigene Muster aus den Einstellungen und Plugin-Ordner an die Registry geben. */
+    static void initFormats() {
+        LogFormats.setPluginDir(Settings.get().dir().resolve("formats"));
+        List<LogFormat> l = new ArrayList<>();
+        for (Settings.UserFormat u : Settings.get().userFormats()) {
+            try {
+                l.add(PatternImportDialog.toFormat(u));
+            } catch (RuntimeException ex) {
+                System.err.println("Muster „" + u.name() + "“ unbrauchbar: " + ex.getMessage());
+            }
+        }
+        LogFormats.setUserFormats(l);
+    }
+
+    /** Untermenü Schema → Logformat: automatisch, JSON, alle Konverter. */
+    private JMenu formatMenu() {
+        JMenu m = new JMenu("Logformat");
+        OpenFile doc = current;
+        String sel = doc == null ? null : doc.formatId;
+        javax.swing.ButtonGroup g = new javax.swing.ButtonGroup();
+        String detected = doc != null && doc.detection != null ? doc.detection.name() : null;
+        javax.swing.JRadioButtonMenuItem auto = new javax.swing.JRadioButtonMenuItem("Automatisch erkennen"
+                + (detected != null && (sel == null || sel.isEmpty()) ? "  (erkannt: " + detected + ")" : ""));
+        auto.setSelected(sel == null || sel.isEmpty());
+        auto.addActionListener(e -> setFormat(""));
+        g.add(auto);
+        m.add(auto);
+        m.addSeparator();
+        List<LogFormat> formats = new ArrayList<>();
+        formats.addAll(LogFormats.all());
+        formats.add(LogFormats.fallback());
+        javax.swing.JRadioButtonMenuItem json = new javax.swing.JRadioButtonMenuItem("JSON Lines");
+        json.setSelected(LogFormats.JSON.equals(sel));
+        json.addActionListener(e -> setFormat(LogFormats.JSON));
+        g.add(json);
+        m.add(json);
+        boolean userSep = false;
+        for (LogFormat f : formats) {
+            boolean user = f.id().startsWith("user:");
+            if (!user && !userSep && !LogFormats.userFormats().isEmpty()) { m.addSeparator(); userSep = true; }
+            javax.swing.JRadioButtonMenuItem it = new javax.swing.JRadioButtonMenuItem(f.name() + (user ? "  (eigenes Muster)" : ""));
+            it.setSelected(f.id().equals(sel));
+            String d = f.description();
+            if (d != null && !d.isBlank())
+                it.setToolTipText("<html><code>" + d.replace("&", "&amp;").replace("<", "&lt;").replace("\n", "<br>") + "</code></html>");
+            it.addActionListener(e -> setFormat(f.id()));
+            g.add(it);
+            m.add(it);
+        }
+        if (doc == null) for (java.awt.Component c : m.getMenuComponents()) c.setEnabled(false);
+        m.addSeparator();
+        if (!LogFormats.userFormats().isEmpty()) {
+            JMenu del = new JMenu("Eigenes Muster löschen");
+            for (Settings.UserFormat u : Settings.get().userFormats()) {
+                del.add(item(u.name(), 0, e -> {
+                    List<Settings.UserFormat> l = new ArrayList<>(Settings.get().userFormats());
+                    l.remove(u);
+                    Settings.get().setUserFormats(l);
+                    initFormats();
+                }));
+            }
+            m.add(del);
+        }
+        JMenuItem plug = new JMenuItem("Eigene Konverter: " + Settings.get().dir().resolve("formats"));
+        plug.setEnabled(false);
+        plug.setToolTipText("JARs mit eigenen Konvertern (jsonlogviewer.format.LogFormat) hier ablegen und neu starten");
+        m.add(plug);
+        for (String err : LogFormats.errors()) {
+            JMenuItem e = new JMenuItem("⚠ " + (err.length() > 90 ? err.substring(0, 90) + "…" : err));
+            e.setToolTipText(err);
+            e.setEnabled(false);
+            m.add(e);
+        }
+        return m;
+    }
+
+    /** Format der angezeigten Datei ändern und neu einlesen. */
+    private void setFormat(String id) {
+        OpenFile doc = current;
+        if (doc == null || id.equals(doc.formatId)) return;
+        doc.formatId = id;
+        flushSave();
+        openLog(doc.path, doc.mode, true);
+        saveOpenFiles();
+    }
+
+    private void importPattern(PatternImportDialog.Source source) {
+        List<String> sample = List.of();
+        if (current != null) {
+            try { sample = LogFormats.sample(current.path); } catch (IOException ignored) { }
+        }
+        PatternImportDialog d = new PatternImportDialog(this, source, sample);
+        if (source != PatternImportDialog.Source.MANUAL && !d.chooseFile()) { d.dispose(); return; }
+        d.setVisible(true);
+        Settings.UserFormat u = d.result();
+        if (u == null) return;
+        List<Settings.UserFormat> l = new ArrayList<>(Settings.get().userFormats());
+        l.removeIf(x -> x.name().equals(u.name()));
+        l.add(u);
+        Settings.get().setUserFormats(l);
+        initFormats();
+        if (current != null) {
+            current.formatId = ""; // erzwingt Neuladen
+            setFormat("user:" + u.name());
         }
     }
 
@@ -1339,7 +1478,14 @@ public final class JsonLogViewer extends JFrame {
     private boolean startIndex(OpenFile doc) {
         LineIndex idx;
         try {
-            idx = new LineIndex(doc.path, doc.mode, timestampPathFor(doc.schema));
+            LogFormats.Detection det;
+            try {
+                det = LogFormats.resolve(doc.formatId, LogFormats.sample(doc.path));
+            } catch (IOException ex) {
+                det = new LogFormats.Detection(null, 0, true);
+            }
+            doc.detection = det;
+            idx = new LineIndex(doc.path, doc.mode, timestampPathFor(doc.schema), det.format());
         } catch (IOException ex) {
             error("Datei konnte nicht geöffnet werden: " + doc.path, ex);
             return false;
@@ -1389,6 +1535,8 @@ public final class JsonLogViewer extends JFrame {
         SavedFilter filter;              // Filterzustand beim Wegschalten
         int selectedLine = -1;
         Runnable afterIndexed;           // nach dem Indizieren, sobald die Datei angezeigt wird
+        String formatId = "";            // gewähltes Logformat, leer = automatisch erkennen
+        LogFormats.Detection detection;  // erkanntes bzw. verwendetes Format
 
         OpenFile(Path path, LineIndex.Mode mode) { this.path = path; this.mode = mode; }
     }
@@ -1399,6 +1547,11 @@ public final class JsonLogViewer extends JFrame {
     private Path pendingSchemaFile;
     private boolean pendingSchemaSet;
     private final JMenu windowMenu = new JMenu("Fenster");
+
+    /** Ist die Datei im Menü Fenster geöffnet? */
+    boolean isOpen(Path file) {
+        return find(file.toAbsolutePath().normalize()) != null;
+    }
 
     private OpenFile find(Path abs) {
         for (OpenFile f : openFiles) if (f.path.equals(abs)) return f;
@@ -1480,6 +1633,7 @@ public final class JsonLogViewer extends JFrame {
         int i = doc == null ? -1 : openFiles.indexOf(doc);
         if (doc != null) {
             closeDocIndex(doc);
+            Kube.stop(doc.path); // laufendes "logs -f" dieser Datei beenden
             openFiles.remove(doc);
             current = null; // Zustand der geschlossenen Datei nicht merken
         }
@@ -1498,6 +1652,7 @@ public final class JsonLogViewer extends JFrame {
 
     private void closeAll() {
         for (OpenFile f : openFiles) closeDocIndex(f);
+        Kube.stopAll();
         filterCancel.set(true);
         index = null;
     }
@@ -1507,7 +1662,7 @@ public final class JsonLogViewer extends JFrame {
         List<Settings.OpenEntry> entries = new ArrayList<>();
         for (OpenFile f : openFiles) {
             Path sch = f == current ? schemaFile : f.schemaFile;
-            entries.add(new Settings.OpenEntry(f.path, f.mode, sch));
+            entries.add(new Settings.OpenEntry(f.path, f.mode, sch, f.formatId));
         }
         Settings.get().setOpenFiles(entries, current == null ? null : current.path);
         fillWindowMenu();
@@ -1519,6 +1674,7 @@ public final class JsonLogViewer extends JFrame {
             Path p = e.path().toAbsolutePath().normalize();
             if (!java.nio.file.Files.isRegularFile(p) || find(p) != null) continue;
             OpenFile doc = new OpenFile(p, e.mode());
+            doc.formatId = e.format() == null ? "" : e.format();
             if (e.schema() != null && java.nio.file.Files.isRegularFile(e.schema())) {
                 try {
                     doc.schema = Schema.load(e.schema());
@@ -1596,7 +1752,7 @@ public final class JsonLogViewer extends JFrame {
         autoSchemaPending = false;
         if (s == null) {
             if (index != null && (index.lineCount() >= AUTO_SAMPLE || index.isComplete())) {
-                s = Schema.auto(sampleLines());
+                s = Schema.auto(sampleLines(), index::parse);
             } else {
                 s = Schema.auto(List.of());
                 autoSchemaPending = index != null;
@@ -1616,7 +1772,8 @@ public final class JsonLogViewer extends JFrame {
         lastDetailKey = null;
         detail.setText("");
         detailHeader.setText(" ");
-        String name = index == null ? "" : " — " + index.path().getFileName();
+        String name = index == null ? "" : " — " + index.path().getFileName()
+                + (index.format() == null ? "" : "  [" + index.format().name() + "]");
         setTitle(s.title + name);
         updateFilterControls();
     }
@@ -1768,11 +1925,12 @@ public final class JsonLogViewer extends JFrame {
         Schema.Column col = sel > 0 ? model.column(scopeColumns.get(sel - 1)) : null;
         Predicate<String> textMatcher = matcher;
         boolean needJson = !conds.isEmpty() || (textMatcher != null && col != null && !col.isRaw());
+        LineIndex parseIdx = index;
         Predicate<String> lineTest = s -> {
             Object root = null;
             boolean parsed = false;
             if (needJson) {
-                try { root = Json.parse(s); parsed = true; } catch (RuntimeException ex) { /* kein JSON */ }
+                try { root = parseIdx.parse(s); parsed = true; } catch (RuntimeException ex) { /* kein JSON */ }
             }
             if (textMatcher != null) {
                 String target;
@@ -1909,6 +2067,7 @@ public final class JsonLogViewer extends JFrame {
             lastDetailKey = null;
             detail.setText("");
             detailHeader.setText(" ");
+            applyHighlight(false);
             return;
         }
         int lead = table.getColumnModel().getSelectionModel().getLeadSelectionIndex();
@@ -1930,6 +2089,107 @@ public final class JsonLogViewer extends JFrame {
         detail.setWrapStyleWord(true);
         detail.setText(d.body());
         detail.setCaretPosition(0);
+        applyHighlight(true);
+    }
+
+    // ------------------------------------------------------------------ Highlight-Filter
+
+    private JPanel buildHighlightBar() {
+        JPanel p = new JPanel(new BorderLayout(6, 0));
+        JLabel l = new JLabel("Highlight Filter:");
+        l.setLabelFor(highlightField);
+        highlightField.setToolTipText("<html>Regex, Groß-/Kleinschreibung egal. Alle Treffer werden in der Detailansicht gelb markiert.<br>"
+                + "Enter / Umschalt+Enter: nächster / vorheriger Treffer, Esc: leeren</html>");
+        highlightField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+            @Override public void insertUpdate(javax.swing.event.DocumentEvent e) { applyHighlight(true); }
+            @Override public void removeUpdate(javax.swing.event.DocumentEvent e) { applyHighlight(true); }
+            @Override public void changedUpdate(javax.swing.event.DocumentEvent e) { }
+        });
+        highlightField.addActionListener(e -> stepHighlight(1));
+        highlightField.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, java.awt.event.InputEvent.SHIFT_DOWN_MASK), "hlPrev");
+        highlightField.getActionMap().put("hlPrev", new javax.swing.AbstractAction() {
+            @Override public void actionPerformed(java.awt.event.ActionEvent e) { stepHighlight(-1); }
+        });
+        highlightField.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), "hlClear");
+        highlightField.getActionMap().put("hlClear", new javax.swing.AbstractAction() {
+            @Override public void actionPerformed(java.awt.event.ActionEvent e) { highlightField.setText(""); }
+        });
+        highlightCount.setForeground(Color.GRAY);
+        highlightCount.setPreferredSize(new Dimension(80, highlightCount.getPreferredSize().height));
+        p.add(l, BorderLayout.WEST);
+        p.add(highlightField, BorderLayout.CENTER);
+        p.add(highlightCount, BorderLayout.EAST);
+        return p;
+    }
+
+    /** Markiert alle Treffer des Highlight-Filters in der Detailansicht; {@code scroll}: zum ersten Treffer. */
+    private void applyHighlight(boolean scroll) {
+        javax.swing.text.Highlighter h = detail.getHighlighter();
+        h.removeAllHighlights();
+        highlightHits.clear();
+        highlightPos = -1;
+        highlightField.setBackground(UIManager.getColor("TextField.background"));
+        String q = highlightField.getText();
+        if (q.isEmpty()) {
+            highlightCount.setText("");
+            return;
+        }
+        Pattern pat;
+        try {
+            pat = Pattern.compile(q, Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE | Pattern.MULTILINE);
+        } catch (PatternSyntaxException ex) {
+            highlightField.setBackground(new Color(0xFFD6D6));
+            highlightCount.setText("ungültig");
+            return;
+        }
+        String text = detail.getText();
+        java.util.regex.Matcher m = pat.matcher(text);
+        while (m.find() && highlightHits.size() < 10_000) {
+            if (m.end() > m.start()) highlightHits.add(new int[]{m.start(), m.end()});
+            else if (m.end() >= text.length()) break; // leere Treffer (z.B. "a*") nicht markieren
+        }
+        for (int[] hit : highlightHits) {
+            try {
+                h.addHighlight(hit[0], hit[1], HIGHLIGHT);
+            } catch (javax.swing.text.BadLocationException ignored) {
+                // Text hat sich geändert
+            }
+        }
+        highlightCount.setText(highlightHits.isEmpty() ? "keine Treffer" : highlightHits.size() + " Treffer");
+        if (scroll && !highlightHits.isEmpty()) scrollToHit(highlightHits.get(0));
+    }
+
+    /** Springt zum nächsten/vorherigen Treffer und hebt ihn orange hervor. */
+    private void stepHighlight(int dir) {
+        if (highlightHits.isEmpty()) return;
+        int n = highlightHits.size();
+        highlightPos = highlightPos < 0 ? (dir > 0 ? 0 : n - 1) : Math.floorMod(highlightPos + dir, n);
+        javax.swing.text.Highlighter h = detail.getHighlighter();
+        h.removeAllHighlights();
+        for (int i = 0; i < n; i++) {
+            int[] hit = highlightHits.get(i);
+            try {
+                h.addHighlight(hit[0], hit[1], i == highlightPos ? HIGHLIGHT_CURRENT : HIGHLIGHT);
+            } catch (javax.swing.text.BadLocationException ignored) {
+                // Text hat sich geändert
+            }
+        }
+        highlightCount.setText((highlightPos + 1) + " / " + n);
+        scrollToHit(highlightHits.get(highlightPos));
+    }
+
+    private void scrollToHit(int[] hit) {
+        javax.swing.SwingUtilities.invokeLater(() -> {
+            try {
+                java.awt.geom.Rectangle2D a = detail.modelToView2D(hit[0]), b = detail.modelToView2D(hit[1]);
+                if (a == null || b == null) return;
+                java.awt.Rectangle r = a.getBounds().union(b.getBounds());
+                r.grow(0, 2 * r.height); // etwas Kontext ober- und unterhalb
+                detail.scrollRectToVisible(r);
+            } catch (javax.swing.text.BadLocationException ignored) {
+                // Text hat sich geändert
+            }
+        });
     }
 
     /** Inhalt der Detailansicht; {@code copy} ist der Wert für "Kopiere Zelle" (ohne Zusatz "Original"). */
@@ -1940,7 +2200,7 @@ public final class JsonLogViewer extends JFrame {
         if (mi == 0) {
             String header = "Zeile " + (line + 1) + "  —  komplette Zeile";
             try {
-                String body = Json.stringify(Json.parse(text), true);
+                String body = Json.stringify(index.parse(text), true);
                 return new DetailText(header, body, false, body);
             } catch (RuntimeException ex) {
                 return new DetailText(header, "⚠ Kein gültiges JSON: " + ex.getMessage() + "\n\n" + text, true, text);
@@ -1951,7 +2211,7 @@ public final class JsonLogViewer extends JFrame {
                 + (c.name().equals(c.path()) ? "" : "  (" + c.path() + ")");
         if (c.isRaw()) return new DetailText(header, text, true, text);
         try {
-            Object v = Json.get(Json.parse(text), c.segments());
+            Object v = Json.get(index.parse(text), c.segments());
             if (v == null) return new DetailText(header, "(kein Wert)", true, "");
             if (v instanceof Map || v instanceof List) {
                 String body = Json.stringify(v, true);
@@ -2212,6 +2472,16 @@ public final class JsonLogViewer extends JFrame {
                     return;
                 }
                 int newLines = idx.lineCount();
+                OpenFile tdoc = find(idx.path());
+                if (oldLines == 0 && newLines > 0 && tdoc != null && tdoc.formatId.isEmpty()
+                        && tdoc.detection != null && tdoc.detection.empty()) {
+                    // beim Öffnen leer (z.B. kubectl logs -f): Format jetzt am Inhalt erkennen
+                    EventQueue.invokeLater(() -> {
+                        tailBusy = false;
+                        if (index == idx) openLog(idx.path(), idx.mode(), true);
+                    });
+                    return;
+                }
                 int distinctFrom = Math.max(0, oldLines - 1);
                 int from = filter != null ? Math.min(filterFrom, distinctFrom) : distinctFrom;
                 int[][] hits = {new int[64]};
@@ -2226,7 +2496,7 @@ public final class JsonLogViewer extends JFrame {
                         }
                         if (cols.length > 0 && line >= distinctFrom) {
                             try {
-                                Object root = Json.parse(s);
+                                Object root = idx.parse(s);
                                 for (int i = 0; i < cols.length; i++) sets.get(i).add(LogTableModel.displayValue(cols[i], root, s));
                             } catch (RuntimeException ignored) { }
                         }
@@ -2296,7 +2566,7 @@ public final class JsonLogViewer extends JFrame {
         StringBuilder head = new StringBuilder("### Zeile ").append(line + 1).append("\n\n");
         Object root;
         try {
-            root = Json.parse(text);
+            root = index.parse(text);
         } catch (RuntimeException ex) {
             return head.append(fence(text, "text")).toString();
         }
