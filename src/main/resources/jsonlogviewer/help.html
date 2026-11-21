@@ -19,6 +19,7 @@ th { text-align: left; background-color: #E6EDF6; }
 <a href="#start">Erste Schritte</a> &middot;
 <a href="#laden">Große Dateien</a> &middot;
 <a href="#spalten">Spalten &amp; Schema</a> &middot;
+<a href="#text">Text-Logs</a> &middot;
 <a href="#filter">Filter</a> &middot;
 <a href="#zeitraum">Zeitraum</a> &middot;
 <a href="#tabelle">Tabelle &amp; Kopieren</a> &middot;
@@ -62,6 +63,17 @@ Die Tabelle ist schon während des Einlesens bedienbar.</p>
 <li>Änderungen werden automatisch in die geladene Schema-Datei zurückgeschrieben.
 Das automatisch erkannte Schema lässt sich mit <i>Schema &rarr; Schema speichern unter…</i> (Strg+S) ablegen.</li>
 <li>Das Menü <i>Schema</i> zeigt die 20 zuletzt geöffneten Schemas.</li>
+</ul>
+
+<a name="text"></a><h2>Text-Logs</h2>
+<ul>
+<li>Logs, die nicht mit <code>{</code> beginnen, werden automatisch erkannt (Spring Boot, Logback, Log4j, java.util.logging,
+klog, logfmt, sonst <i>Text</i>) und in Spalten wie <code>@timestamp</code>, <code>level</code>, <code>logger_name</code>,
+<code>message</code>, <code>stack_trace</code> zerlegt. Stacktraces gehören zum vorherigen Eintrag.</li>
+<li><i>Schema &rarr; Logformat</i> zeigt das erkannte Format und legt es für die Datei fest.</li>
+<li><i>Schema &rarr; Import &rarr; logback.xml… / log4j2.xml…</i>: Konfiguration wählen, Appender auswählen,
+Muster prüfen (Vorschau und Trefferquote), <i>Übernehmen</i>. <i>Muster eingeben…</i> nimmt ein PatternLayout direkt.</li>
+<li>Eigene Konverter (Interface <code>jsonlogviewer.format.LogFormat</code>) als JAR nach <code>~/.beswinged/formats/</code> legen.</li>
 </ul>
 
 <a name="filter"></a><h2>Filter</h2>

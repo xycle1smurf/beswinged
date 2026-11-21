@@ -12,6 +12,7 @@ import java.util.Arrays;
 import java.util.Locale;
 import java.util.Map;
 import java.util.function.BooleanSupplier;
+import jsonlogviewer.format.LogFormat;
 
 /**
  * Index einer (beliebig großen) JSON-Lines-Datei.
@@ -43,6 +44,7 @@ public final class LineIndex implements Closeable {
     private final FileChannel channel;
     private final Mode mode;
     private final RamStore ram; // nur Modus RAM
+    private final LogFormat format; // null = JSON Lines; sonst Text-Logformat mit mehrzeiligen Einträgen
 
     // Offsets: Start jeder nicht-leeren Zeile, am Ende zusätzlich das Dateiende als Sentinel.
     private volatile long[][] chunks = new long[64][];
@@ -54,6 +56,7 @@ public final class LineIndex implements Closeable {
     // Scan-Zustand (nur Schreib-Thread)
     private long scannedPos;
     private boolean atLineStart = true;
+    private long pendingStart = -1; // Textformat: begonnene Zeile, noch nicht entschieden ob neuer Eintrag
 
     // Zeitstempel-Index: tsValues[i] = Zeitstempel von Zeile i*TS_STEP (fortgeschrieben, falls unbekannt)
     private volatile long[] tsValues = new long[1024];
@@ -61,6 +64,12 @@ public final class LineIndex implements Closeable {
     private volatile String[] tsPath; // null = beim ersten Treffer automatisch erkennen
 
     public LineIndex(Path path, Mode mode, String[] timestampPath) throws IOException {
+        this(path, mode, timestampPath, null);
+    }
+
+    /** @param format Konverter für Text-Logs; null = JSON Lines (jede Zeile ein Eintrag) */
+    public LineIndex(Path path, Mode mode, String[] timestampPath, LogFormat format) throws IOException {
+        this.format = format;
         this.path = path;
         this.mode = mode;
         this.channel = FileChannel.open(path, StandardOpenOption.READ);
@@ -70,6 +79,24 @@ public final class LineIndex implements Closeable {
     }
 
     public Path path() { return path; }
+    /** Konverter, null = JSON. */
+    public LogFormat format() { return format; }
+
+    /**
+     * Zerlegt einen Eintrag: JSON oder über den Konverter.
+     * @throws Json.ParseException wenn der Eintrag nicht erkannt wird
+     */
+    public Object parse(String text) {
+        if (format == null) return Json.parse(text);
+        Map<String, Object> m;
+        try {
+            m = format.parse(text);
+        } catch (RuntimeException ex) {
+            throw new Json.ParseException(format.name() + ": " + ex);
+        }
+        if (m == null) throw new Json.ParseException("Kein Eintrag im Format „" + format.name() + "“");
+        return m;
+    }
     public Mode mode() { return mode; }
     public boolean isComplete() { return complete; }
     public long bytesScanned() { return bytesScanned; }
@@ -138,20 +165,55 @@ public final class LineIndex implements Closeable {
             if (ram != null) ram.append(a, n); // vor dem Veröffentlichen der Zeilen
             for (int k = 0; k < n; k++) {
                 byte b = a[k];
-                if (b == '\n') atLineStart = true;
-                else if (atLineStart && b != '\r') {
+                if (b == '\n') {
+                    atLineStart = true;
+                    if (pendingStart >= 0) decide(pos + k, a, pos, false);
+                } else if (atLineStart && b != '\r') {
                     long start = pos + k;
+                    atLineStart = false;
+                    if (format != null) { pendingStart = start; continue; }
                     sampleTimestampBefore(start, a, pos);
                     add(start);
-                    atLineStart = false;
                 }
             }
             pos += n;
             scannedPos = pos;
             bytesScanned = pos;
         }
+        // Textformat, letzte Zeile ohne Zeilenumbruch: nur übernehmen, wenn sie schon als Eintrag erkennbar ist
+        if (pendingStart >= 0) decide(pos, a, Long.MIN_VALUE, true);
         // letzte Zeile ist durch das Dateiende abgeschlossen
         sampleTimestampBefore(pos, a, Long.MIN_VALUE);
+    }
+
+    /**
+     * Textformat: entscheidet, ob die Zeile ab {@link #pendingStart} (bis {@code end}) einen neuen Eintrag beginnt
+     * oder als Folgezeile zum vorigen gehört. Ohne vorigen Eintrag beginnt immer einer.
+     * @param atEof Zeile ist evtl. noch unvollständig (Tail): eine Folgezeile bleibt offen und wird später neu bewertet
+     */
+    private void decide(long end, byte[] buf, long bufStart, boolean atEof) throws IOException {
+        long s = pendingStart;
+        int len = (int) Math.min(end - s, 4096);
+        String text;
+        if (bufStart != Long.MIN_VALUE && s >= bufStart && s + len <= bufStart + buf.length) {
+            int off = (int) (s - bufStart);
+            text = new String(buf, off, trimEnd(buf, off, len), StandardCharsets.UTF_8);
+        } else {
+            text = readRange(s, len);
+        }
+        boolean start;
+        try {
+            start = size == 0 || format.isEntryStart(text);
+        } catch (RuntimeException ex) {
+            start = false;
+        }
+        if (start) {
+            sampleTimestampBefore(s, buf, bufStart);
+            add(s);
+            pendingStart = -1;
+        } else if (!atEof) {
+            pendingStart = -1; // Folgezeile, gehört zum vorigen Eintrag
+        }
     }
 
     /**
@@ -198,7 +260,7 @@ public final class LineIndex implements Closeable {
     public String timestampText(String line) {
         Object root;
         try {
-            root = Json.parse(line);
+            root = parse(line);
         } catch (RuntimeException e) {
             return null;
         }

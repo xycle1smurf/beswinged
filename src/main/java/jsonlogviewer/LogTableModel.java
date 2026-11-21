@@ -173,7 +173,7 @@ public final class LogTableModel extends AbstractTableModel {
         String[] cells = new String[n];
         Object root;
         try {
-            root = Json.parse(text);
+            root = index.parse(text);
         } catch (RuntimeException e) {
             Arrays.fill(cells, "");
             for (int k = 0; k < n; k++) if (cols[k].isRaw()) cells[k] = cell(text);

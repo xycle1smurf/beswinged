@@ -159,10 +159,15 @@ public final class Schema {
 
     /** Schema automatisch aus den Top-Level-Schlüsseln der ersten Zeilen ableiten. */
     public static Schema auto(List<String> sampleLines) {
+        return auto(sampleLines, Json::parse);
+    }
+
+    /** @param parser zerlegt eine Zeile (JSON oder Text-Logformat) */
+    public static Schema auto(List<String> sampleLines, java.util.function.Function<String, Object> parser) {
         Set<String> keys = new LinkedHashSet<>();
         for (String line : sampleLines) {
             try {
-                if (Json.parse(line) instanceof Map<?, ?> m)
+                if (parser.apply(line) instanceof Map<?, ?> m)
                     for (Object k : m.keySet()) keys.add(String.valueOf(k));
             } catch (RuntimeException ignored) {
                 // ungültige Zeile -> überspringen

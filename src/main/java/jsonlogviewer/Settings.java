@@ -39,7 +39,20 @@ final class Settings {
     private final List<RecentSchema> recent = new ArrayList<>();
     private final Map<Integer, LevelStyle> levelStyles = new LinkedHashMap<>(); // Rang -> Stil
     /** Geöffnete Datei im Menü Fenster (Reihenfolge = Menü). */
-    record OpenEntry(Path path, LineIndex.Mode mode, Path schema) {}
+    record OpenEntry(Path path, LineIndex.Mode mode, Path schema, String format) {}
+
+    /** Eigenes Logformat aus einem Layout-Muster (Schema → Import). */
+    record UserFormat(String name, String pattern, String source) {}
+
+    private final List<UserFormat> userFormats = new ArrayList<>();
+
+    List<UserFormat> userFormats() { return List.copyOf(userFormats); }
+
+    void setUserFormats(List<UserFormat> list) {
+        userFormats.clear();
+        userFormats.addAll(list);
+        save();
+    }
 
     private final List<OpenEntry> openFiles = new ArrayList<>();
     private Path activeFile;
@@ -256,7 +269,7 @@ final class Settings {
                 if (!(o instanceof Map<?, ?> e) || !(e.get("path") instanceof String p) || p.isBlank()) continue;
                 LineIndex.Mode mode = "seek".equalsIgnoreCase(str(e.get("mode"))) ? LineIndex.Mode.SEEK : LineIndex.Mode.RAM;
                 String sch = str(e.get("schema"));
-                openFiles.add(new OpenEntry(Path.of(p), mode, sch.isBlank() ? null : Path.of(sch)));
+                openFiles.add(new OpenEntry(Path.of(p), mode, sch.isBlank() ? null : Path.of(sch), str(e.get("format"))));
             }
         }
         if (m.get("activeFile") instanceof String s && !s.isBlank()) activeFile = Path.of(s);
@@ -276,6 +289,12 @@ final class Settings {
                 }
                 LevelStyle st = new LevelStyle(bool(e.get("bold")), bool(e.get("italic")), fg);
                 if (!st.isDefault()) levelStyles.put(rank, st);
+            }
+        }
+        if (m.get("logFormats") instanceof List<?> l) {
+            for (Object o : l) {
+                if (!(o instanceof Map<?, ?> e) || str(e.get("name")).isBlank() || str(e.get("pattern")).isBlank()) continue;
+                userFormats.add(new UserFormat(str(e.get("name")), str(e.get("pattern")), str(e.get("source"))));
             }
         }
         if (m.get("clusters") instanceof List<?> l) {
@@ -320,10 +339,17 @@ final class Settings {
             sb.append("  - path: ").append(q(e.path().toString())).append('\n');
             sb.append("    mode: ").append(e.mode() == LineIndex.Mode.SEEK ? "seek" : "ram").append('\n');
             if (e.schema() != null) sb.append("    schema: ").append(q(e.schema().toString())).append('\n');
+            if (e.format() != null && !e.format().isBlank()) sb.append("    format: ").append(q(e.format())).append('\n');
         }
         if (activeFile != null) sb.append("activeFile: ").append(q(activeFile.toString())).append('\n');
         sb.append(recentFiles.isEmpty() ? "\nrecentFiles: []\n" : "\nrecentFiles:\n");
         for (Path p : recentFiles) sb.append("  - ").append(q(p.toString())).append('\n');
+        sb.append(userFormats.isEmpty() ? "\nlogFormats: []\n" : "\n# Schema → Import: eigene Layout-Muster (Logback/Log4j)\nlogFormats:\n");
+        for (UserFormat f : userFormats) {
+            sb.append("  - name: ").append(q(f.name())).append('\n');
+            sb.append("    pattern: ").append(q(f.pattern())).append('\n');
+            if (!f.source().isBlank()) sb.append("    source: ").append(q(f.source())).append('\n');
+        }
         sb.append(clusters.isEmpty() ? "\nclusters: []\n"
                 : "\n# Extras → Connect Settings (Zugangsdaten nur in der kubeconfig)\nclusters:\n");
         for (Cluster c : clusters) {

@@ -105,6 +105,31 @@ Sommer- bzw. Winterzeit. Zeitstempel ohne Offset gelten als UTC.
 Zeilen, die kein gültiges JSON sind, werden lila hinterlegt, mit dem Rohtext in der ersten Spalte.
 Leere Zeilen werden übersprungen. Die Zeilennummer `#` zählt nur nicht-leere Zeilen.
 
+## Text-Logs (kein JSON)
+
+Beginnt die Mehrheit der Zeilen nicht mit `{`, wird das Format anhand der ersten Zeilen erkannt
+und jeder Eintrag in Felder zerlegt, als wäre er JSON gewesen (Feldnamen wie beim
+logstash-logback-encoder: `@timestamp`, `level`, `thread_name`, `logger_name`, `message`, `stack_trace`).
+Stacktraces und andere Folgezeilen werden dem vorherigen Eintrag zugeordnet.
+
+Eingebaut: Spring Boot 2/3, Logback, Log4j/Log4j2 (auch WildFly/JBoss), java.util.logging,
+klog (Kubernetes), logfmt und als Rückfall *Text (allgemein)*. Das gilt für Dateien wie für
+`kubectl logs`/`oc logs`.
+
+*Schema → Logformat* zeigt das erkannte Format und erlaubt, es je Datei festzulegen.
+*Schema → Import → logback.xml… / log4j2.xml…* liest eine Konfiguration ein, listet ihre Appender
+mit Muster (auch `${…}`-Properties und die Spring-Boot-Standardmuster), testet das gewählte Muster
+an der geöffneten Datei und legt es als eigenes Format ab. *Muster eingeben…* nimmt ein
+PatternLayout direkt entgegen. Eigene Muster stehen in `settings.yaml` unter `logFormats`.
+
+### Eigene Konverter
+
+Ein Konverter implementiert `jsonlogviewer.format.LogFormat` (oder erbt von `AbstractLogFormat`,
+die Stacktraces und Folgezeilen schon behandelt). Vorlage: `jsonlogviewer.format.example.ExampleFormat`.
+Die Klasse wird in `META-INF/services/jsonlogviewer.format.LogFormat` eingetragen und als JAR nach
+`~/.beswinged/formats/` gelegt oder auf den Classpath gesetzt
+(`java -cp beswinged.jar:meinformat.jar jsonlogviewer.JsonLogViewer`, unter Windows `;` statt `:`).
+
 ## Schema
 
 Siehe [schema.example.yaml](schema.example.yaml) bzw. [schema.example.properties](schema.example.properties).
