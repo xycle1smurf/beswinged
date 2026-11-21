@@ -37,6 +37,9 @@ th { text-align: left; background-color: #E6EDF6; }
 Ohne Schema werden die Spalten aus den Feldern der ersten 200 Zeilen erkannt.</li>
 <li>Ein Klick auf eine Zeile zeigt unten die <b>Detailansicht</b>: Klick auf <code>#</code> zeigt die ganze Zeile als formatiertes JSON,
 Klick auf eine andere Zelle nur deren Wert mit echten Zeilenumbrüchen.</li>
+<li><b>Log einfügen</b>: <i>Datei &rarr; Log einfügen…</i> (Strg+Umschalt+V) öffnet ein Textfeld mit dem Inhalt der Zwischenablage,
+z.B. einem Log-Ausschnitt aus Teams. <i>Anzeigen</i> (Strg+Enter) zeigt ihn wie eine Datei. <i>Reparieren</i> fügt umbrochene
+JSON-Objekte zusammen und korrigiert Zeichen, die beim Kopieren entstehen (geschützte Leerzeichen, &bdquo;typografische&ldquo; Anführungszeichen).</li>
 <li>Kommandozeile: <code>beswinged app.log --schema schema.yaml [--ram|--seek] [--tail]</code></li>
 </ul>
 
@@ -118,6 +121,13 @@ Passwörter und Tokens speichert beswinged nicht: Angemeldet wird wie gewohnt, z
 DeploymentConfig) und Name wählen; <i>Laden</i> listet die vorhandenen mit Status. Bei Workloads werden alle Pods gelesen.</li>
 <li><i>Seit</i>, <i>Letzte Zeilen</i> und <i>Vorheriger Container</i> begrenzen das Log. Mit <i>Folgen</i> kommen neue Zeilen laufend
 hinzu (Tail); <i>Datei &rarr; Schließen</i> beendet die Verbindung.</li>
+<li><i>Extras &rarr; Show Namespace…</i>: eigenes Fenster mit allen Objekten eines Namespaces als Kacheln, ähnlich Argo CD.
+Kinder (ReplicaSet, Pod, Job, Endpoints) stehen rechts neben ihrem Besitzer. Symbole: grünes Herz = Healthy, blauer Kreis = Progressing,
+rotes gebrochenes Herz = Degraded, Pause = Suspended. Filter nach Name, Zustand und Art; Strg+Mausrad zoomt, Ziehen verschiebt,
+<i>Auto</i> lädt alle 10&nbsp;s neu.</li>
+<li>Doppelklick auf eine Kachel öffnet ein eigenes Fenster mit Manifest (YAML, Suche mit Strg+F), Zusammenfassung und Events.
+Es können beliebig viele offen sein. Werte von Secrets sind verdeckt, bis <i>Werte anzeigen</i> gewählt wird.
+Rechtsklick &rarr; <i>Logs…</i> öffnet Connect mit dem Objekt.</li>
 </ul>
 
 <a name="einstellungen"></a><h2>Einstellungen</h2>
@@ -138,6 +148,7 @@ hinzu (Tail); <i>Datei &rarr; Schließen</i> beendet die Verbindung.</li>
 <tr><td>Strg+G</td><td>Gehe zu Zeile</td></tr>
 <tr><td>Strg+Pos1 / Strg+Ende</td><td>Zum Anfang / Zum Ende</td></tr>
 <tr><td>Strg+1 … Strg+9</td><td>Zur Datei im Menü Fenster</td></tr>
+<tr><td>Strg+Umschalt+V</td><td>Log einfügen</td></tr>
 <tr><td>Strg+K</td><td>Connect (Kubernetes/OpenShift)</td></tr>
 <tr><td>F1</td><td>Diese Hilfe</td></tr>
 </table>

@@ -302,6 +302,10 @@ public final class JsonLogViewer extends JFrame {
             @Override public void menuCanceled(MenuEvent e) { }
         });
         file.add(recentFiles);
+        JMenuItem pasteItem = item("Log einfügen…", 0, e -> new PasteWindow(this).setVisible(true));
+        pasteItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_V, Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx() | KeyEvent.SHIFT_DOWN_MASK));
+        pasteItem.setToolTipText("Log-Ausschnitt aus der Zwischenablage (z.B. aus Teams) anzeigen");
+        file.add(pasteItem);
         file.add(item("Schließen", KeyEvent.VK_W, e -> closeCurrent(true)));
         file.addSeparator();
         file.add(item("Neu laden", KeyEvent.VK_F5, e -> reload()));
@@ -346,6 +350,7 @@ public final class JsonLogViewer extends JFrame {
         extras.add(item("Log-Generator…", 0, e -> showGenerator()));
         extras.addSeparator();
         extras.add(item("Connect…", KeyEvent.VK_K, e -> new ConnectDialog(this).setVisible(true)));
+        extras.add(item("Show Namespace…", 0, e -> new NamespaceWindow(this).setVisible(true)));
         extras.add(item("Connect Settings…", 0, e -> new ConnectSettingsDialog(this).setVisible(true)));
         bar.add(file);
         bar.add(schemaMenu);
@@ -1414,6 +1419,11 @@ public final class JsonLogViewer extends JFrame {
     private Path pendingSchemaFile;
     private boolean pendingSchemaSet;
     private final JMenu windowMenu = new JMenu("Fenster");
+
+    /** Ist die Datei im Menü Fenster geöffnet? */
+    boolean isOpen(Path file) {
+        return find(file.toAbsolutePath().normalize()) != null;
+    }
 
     private OpenFile find(Path abs) {
         for (OpenFile f : openFiles) if (f.path.equals(abs)) return f;

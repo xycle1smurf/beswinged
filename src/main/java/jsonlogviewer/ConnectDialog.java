@@ -168,6 +168,17 @@ final class ConnectDialog extends JDialog {
         follow.setSelected(p.follow());
     }
 
+    /** Vorbelegung aus Show Namespace; der Pod- bzw. Workload-Status wird gleich geladen. */
+    void preset(String clusterName, String ns, String k, String n) {
+        for (int i = 0; i < cluster.getItemCount(); i++) if (cluster.getItemAt(i).name().equals(clusterName)) cluster.setSelectedIndex(i);
+        namespace.setSelectedItem(ns);
+        kind.setSelectedItem(Kube.KINDS.contains(k) ? k : "Pod");
+        name.setSelectedItem(n);
+        container.setSelectedItem("");
+        updateCommand();
+        javax.swing.SwingUtilities.invokeLater(() -> { if (isShowing()) loadTargets(); });
+    }
+
     private Settings.Cluster selectedCluster() { return (Settings.Cluster) cluster.getSelectedItem(); }
 
     private static String text(JComboBox<?> c) {

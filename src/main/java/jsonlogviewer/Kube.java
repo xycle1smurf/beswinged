@@ -127,6 +127,23 @@ final class Kube {
                 + (answer.startsWith("yes") ? "erlaubt" : answer.startsWith("no") ? "nicht erlaubt" : answer);
     }
 
+    // ------------------------------------------------------------------ Objekte (Show Namespace)
+
+    /** {@code get <arten> -n <ns> -o json}; mehrere Arten durch Komma getrennt. */
+    String getJson(String kinds, String namespace) throws IOException {
+        return run(cmd("get", kinds, "-n", namespace, "-o", "json"));
+    }
+
+    /** Ein Objekt als JSON. */
+    String getJson(String kind, String name, String namespace) throws IOException {
+        return run(cmd("get", kind.toLowerCase(java.util.Locale.ROOT), name, "-n", namespace, "-o", "json"));
+    }
+
+    /** Events zu einem Objekt (nach UID). */
+    String eventsJson(String namespace, String uid) throws IOException {
+        return run(cmd("get", "events", "-n", namespace, "--field-selector", "involvedObject.uid=" + uid, "-o", "json"));
+    }
+
     // ------------------------------------------------------------------ Log-Befehl
 
     /**
@@ -337,7 +354,7 @@ final class Kube {
         return s;
     }
 
-    private static Object path(Object o, String... keys) {
+    static Object path(Object o, String... keys) {
         for (String k : keys) {
             if (!(o instanceof Map<?, ?> m)) return null;
             o = m.get(k);
@@ -345,5 +362,5 @@ final class Kube {
         return o;
     }
 
-    private static String str(Object o) { return o == null ? "" : o.toString(); }
+    static String str(Object o) { return o == null ? "" : o.toString(); }
 }
